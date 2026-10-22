@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { getApiConfig, requestChat, requestImage } from './api.js'
 import logoUrl from '../logo.ico'
 import { ArrowLeft } from 'reicon-react/icons/ArrowLeft'
@@ -69,8 +69,40 @@ function App() {
   const [accessKeyDraft, setAccessKeyDraft] = useState('')
   const pendingRequest = useRef(null)
   const settingsDialog = useRef(null)
+  const conversationRef = useRef(null)
+  const messageThreadRef = useRef(null)
+  const followLatest = useRef(true)
+  const hasMessages = messages.length > 0
 
   useEffect(() => () => pendingRequest.current?.abort(), [])
+
+  useLayoutEffect(() => {
+    const conversation = conversationRef.current
+    if (!hasMessages) {
+      conversation.scrollTop = 0
+      followLatest.current = true
+    } else if (followLatest.current) {
+      conversation.scrollTop = conversation.scrollHeight
+    }
+  }, [messages, isThinking, hasMessages])
+
+  useEffect(() => {
+    if (!hasMessages) return
+    const conversation = conversationRef.current
+    // Keep the latest reply visible when an image loads or the input area resizes.
+    // Reading older messages pauses this behavior until the user scrolls back down.
+    const observer = new ResizeObserver(() => {
+      if (followLatest.current) conversation.scrollTop = conversation.scrollHeight
+    })
+    observer.observe(conversation)
+    observer.observe(messageThreadRef.current)
+    return () => observer.disconnect()
+  }, [hasMessages])
+
+  const handleConversationScroll = () => {
+    const conversation = conversationRef.current
+    followLatest.current = conversation.scrollHeight - conversation.scrollTop - conversation.clientHeight < 80
+  }
 
   useEffect(() => {
     if (!settingsOpen) return
@@ -133,6 +165,7 @@ function App() {
   const sendMessage = async (text = input) => {
     const content = text.trim()
     if (!content || pendingRequest.current) return
+    followLatest.current = true
     const mode = generationMode
     const controller = new AbortController()
     pendingRequest.current = controller
@@ -216,6 +249,7 @@ function App() {
           <span className="new-chat-shortcut">⌘ K</span>
         </button>
 
+        <div className="sidebar-scroll">
         <div className="nav-list">
           {navItems.map(({ label, icon: Icon, primary }) => (
             <button key={label} className={`nav-item ${activeNav === label ? 'active' : ''} ${primary ? 'nav-primary' : ''}`} onClick={() => { setActiveNav(label); if (primary) startNewChat() }}>
@@ -231,6 +265,7 @@ function App() {
           <div className="chat-list">
             {recentChats.map((chat, index) => <button key={chat} className={`chat-row ${index === 0 ? 'selected' : ''}`} onClick={() => setInput(chat)}><Message size={15} weight="Outline" /><span>{chat}</span></button>)}
           </div>
+        </div>
         </div>
 
         <div className="sidebar-bottom">
@@ -249,7 +284,7 @@ function App() {
           <div className="topbar-right"><div className="model-pill"><span className={`model-dot status-${connection.chat}`} /> {model}<ChevronDown size={14} /></div><button className="icon-button" aria-label="搜索"><Search3 {...iconProps} /></button><button className="user-avatar" aria-label="个人资料">林</button></div>
         </header>
 
-        <section className={`conversation ${messages.length ? 'has-messages' : ''}`}>
+        <section ref={conversationRef} onScroll={handleConversationScroll} className={`conversation ${hasMessages ? 'has-messages' : ''}`} aria-label="聊天记录" tabIndex={0}>
           {messages.length === 0 ? (
             <div className="welcome-panel">
               <div className="welcome-orb"><div className="orb-core"><img src={logoUrl} alt="" /></div><span className="orb-ring ring-one" /><span className="orb-ring ring-two" /></div>
@@ -262,7 +297,7 @@ function App() {
               </div>
             </div>
           ) : (
-            <div className="message-thread">
+            <div ref={messageThreadRef} className="message-thread">
               <div className="thread-intro"><span className="mini-mark"><img src={logoUrl} alt="" /></span><span>佛祖 AI · {model}</span></div>
               {messages.map((message, index) => <div className={`message-block ${message.role}`} key={`${message.role}-${index}`}><div className="message-avatar">{message.role === 'user' ? '林' : <img src={logoUrl} alt="" />}</div><div className="message-body"><div className="message-author">{message.role === 'user' ? '你' : '佛祖 AI'}</div><p>{message.content}</p>{message.imageUrl && <img className="generated-image" src={message.imageUrl} alt="根据提示词生成的图片" />}{message.needsAccessKey && <button className="message-action" onClick={openSettings}>打开设置填写访问口令</button>}</div></div>)}
               {isThinking && <div className="message-block assistant"><div className="message-avatar"><img src={logoUrl} alt="" /></div><div className="message-body"><div className="message-author">佛祖 AI</div><div className="thinking"><span /><span /><span /></div></div></div>}
