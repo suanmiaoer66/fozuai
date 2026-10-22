@@ -1,0 +1,109 @@
+name: Deploy Cloudflare Worker
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-worker
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run API and Worker tests
+        run: npm test
+
+      - name: Check deployment secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          APIMART_API_KEY: ${{ secrets.APIMART_API_KEY }}
+          SITE_ACCESS_KEY: ${{ secrets.SITE_ACCESS_KEY }}
+        run: |
+          node --input-type=module <<'NODE'
+          const names = ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'DEEPSEEK_API_KEY', 'APIMART_API_KEY', 'SITE_ACCESS_KEY'];
+          const missing = names.filter((name) => !process.env[name]?.trim());
+          if (missing.length) {
+            console.error(`Missing GitHub Actions Secrets: ${missing.join(', ')}`);
+            process.exit(1);
+          }
+          if (!/^[\x21-\x7e]{32,512}$/.test(process.env.SITE_ACCESS_KEY)) {
+            console.error('SITE_ACCESS_KEY must contain 32–512 ASCII characters without spaces.');
+            process.exit(1);
+          }
+          NODE
+
+      - name: Apply public service configuration
+        env:
+          DEEPSEEK_BASE_URL: ${{ vars.DEEPSEEK_BASE_URL }}
+          DEEPSEEK_CHAT_MODEL: ${{ vars.DEEPSEEK_CHAT_MODEL || vars.DEEPSEEK_VISION_MODEL || 'deepseek-flash' }}
+          DEEPSEEK_REASONING_MODEL: ${{ vars.DEEPSEEK_REASONING_MODEL || vars.DEEPSEEK_VISION_MODEL || 'deepseek-flash' }}
+          APIMART_BASE_URL: ${{ vars.APIMART_BASE_URL }}
+          APIMART_IMAGE_MODEL: ${{ vars.APIMART_IMAGE_MODEL }}
+          APIMART_IMAGE_SIZE: ${{ vars.APIMART_IMAGE_SIZE }}
+          APIMART_IMAGE_RESOLUTION: ${{ vars.APIMART_IMAGE_RESOLUTION }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const config = JSON.parse(readFileSync('wrangler.jsonc', 'utf8'));
+          for (const name of Object.keys(config.vars)) {
+            if (process.env[name]?.trim()) config.vars[name] = process.env[name].trim();
+          }
+          writeFileSync('wrangler.jsonc', JSON.stringify(config, null, 2));
+          NODE
+
+      - name: Deploy Worker and sync runtime secrets
+        id: worker
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "4.151.3"
+          command: deploy
+          secrets: |
+            DEEPSEEK_API_KEY
+            APIMART_API_KEY
+            SITE_ACCESS_KEY
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          APIMART_API_KEY: ${{ secrets.APIMART_API_KEY }}
+          SITE_ACCESS_KEY: ${{ secrets.SITE_ACCESS_KEY }}
+
+      - name: Check Worker health and show frontend configuration
+        env:
+          WORKER_URL: ${{ steps.worker.outputs.deployment-url }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync } from 'node:fs';
+          const root = process.env.WORKER_URL.replace(/\/+$/, '');
+          if (!root.startsWith('https://')) throw new Error('Worker deployment did not return an HTTPS URL.');
+          let healthy = false;
+          for (let attempt = 0; attempt < 6; attempt++) {
+            try {
+              const response = await fetch(`${root}/health`, { signal: AbortSignal.timeout(10000) });
+              const data = await response.json();
+              healthy = response.ok && data.status === 'ok' && ['chat', 'image', 'access'].every((key) => data.configured?.[key]);
+              if (healthy) break;
+            } catch {}
+            if (attempt < 5) await new Promise((resolve) => setTimeout(resolve, 5000));
+          }
+          if (!healthy) throw new Error('Worker health check failed or runtime Secrets are missing.');
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Worker deployed: ${root}\n\nHealth check passed; runtime Secrets are configured. This does not call paid model APIs.\n\nSet both GitHub Variables to this URL, then run Deploy to GitHub Pages:\n\n- DEEPSEEK_API_PROXY_URL=${root}\n- IMAGE_API_PROXY_URL=${root}\n`);
+          NODE

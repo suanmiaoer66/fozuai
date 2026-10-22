@@ -23,16 +23,15 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
       - name: Install dependencies
         run: npm ci
+      - name: Run API and Worker tests
+        run: npm test
       - name: Build
         env:
-          VITE_DEEPSEEK_BASE_URL: ${{ vars.DEEPSEEK_BASE_URL }}
           VITE_DEEPSEEK_API_PROXY_URL: ${{ vars.DEEPSEEK_API_PROXY_URL }}
-          VITE_DEEPSEEK_VISION_MODEL: ${{ vars.DEEPSEEK_VISION_MODEL }}
-          VITE_APIMART_BASE_URL: ${{ vars.APIMART_BASE_URL }}
           VITE_APIMART_IMAGE_MODEL: ${{ vars.APIMART_IMAGE_MODEL }}
           VITE_APIMART_IMAGE_SIZE: ${{ vars.APIMART_IMAGE_SIZE }}
           VITE_APIMART_IMAGE_RESOLUTION: ${{ vars.APIMART_IMAGE_RESOLUTION }}

@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "fozuai-api",
+  "main": "worker/index.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "vars": {
+    "ALLOWED_ORIGIN": "https://suanmiaoer66.github.io",
+    "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
+    "DEEPSEEK_CHAT_MODEL": "deepseek-flash",
+    "DEEPSEEK_REASONING_MODEL": "deepseek-flash",
+    "APIMART_BASE_URL": "https://api.apimart.ai",
+    "APIMART_IMAGE_MODEL": "gpt-image-2",
+    "APIMART_IMAGE_SIZE": "1:1",
+    "APIMART_IMAGE_RESOLUTION": "1k"
+  }
+}
