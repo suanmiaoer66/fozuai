@@ -14,7 +14,9 @@ npm run dev
 - 高级佛祖模型：调用 `deepseek-reasoner`
 - 导管佛祖模型：调用 `deepseek-chat`
 
-配置 `VITE_DEEPSEEK_API_KEY` 后，输入会直接请求 DeepSeek Chat Completions 接口。也可以配置 `VITE_DEEPSEEK_BASE_URL` 覆盖 API 地址。生产环境建议在服务端代理请求，避免把密钥暴露给浏览器。
+本地配置 `VITE_DEEPSEEK_API_KEY` 后，输入会直接请求 DeepSeek Chat Completions 接口。线上建议配置 `VITE_DEEPSEEK_API_PROXY_URL`，代理需要保留 `/chat/completions` 路径并在服务端使用 `DEEPSEEK_API_KEY`。也可以配置 `VITE_DEEPSEEK_BASE_URL` 覆盖 API 地址。
+
+图片生成接入 APIMart 的 GPT-Image-2：提交任务到 `/v1/images/generations`，再轮询 `/v1/tasks/{task_id}`，完成后展示返回图片。页面默认进入“图片生成”模式时使用 `gpt-image-2`、`1:1`、`1k`。线上建议设置 `VITE_IMAGE_API_PROXY_URL`，代理需要保留与 APIMart 相同的 `/v1` 路径；本地调试才使用 `VITE_APIMART_API_KEY`。
 
 ## GitHub Pages
 

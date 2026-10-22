@@ -41,7 +41,7 @@ const recentChats = [
 
 const promptCards = [
   { icon: Document, title: '总结一篇长文', copy: '提取重点，整理成清晰结构' },
-  { icon: ImageSparkle, title: '打开灵感模式', copy: '一起发散一个有趣的点子' },
+  { icon: ImageSparkle, title: '生成一张图片', copy: '把想象变成一张图' },
   { icon: Code, title: '解释一段代码', copy: '从逻辑到细节，讲到你听懂' },
   { icon: HandHeart, title: '帮我做个决定', copy: '把复杂问题拆成下一步行动' },
 ]
@@ -60,6 +60,7 @@ function App() {
   const [modelOpen, setModelOpen] = useState(false)
   const [model, setModel] = useState('高级佛祖模型')
   const [attached, setAttached] = useState(false)
+  const [generationMode, setGenerationMode] = useState('chat')
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
   const greeting = useMemo(() => {
@@ -69,6 +70,65 @@ function App() {
     return '晚上好，今天想从哪件事开始？'
   }, [])
 
+  const getImageApiConfig = () => {
+    const proxyUrl = import.meta.env.VITE_IMAGE_API_PROXY_URL?.replace(/\/$/, '')
+    const baseUrl = (proxyUrl || import.meta.env.VITE_APIMART_BASE_URL || 'https://api.apimart.ai').replace(/\/$/, '')
+    const apiRoot = baseUrl.endsWith('/v1') ? baseUrl : `${baseUrl}/v1`
+    return {
+      apiRoot,
+      apiKey: proxyUrl ? '' : import.meta.env.VITE_APIMART_API_KEY,
+      model: import.meta.env.VITE_APIMART_IMAGE_MODEL || 'gpt-image-2',
+      size: import.meta.env.VITE_APIMART_IMAGE_SIZE || '1:1',
+      resolution: import.meta.env.VITE_APIMART_IMAGE_RESOLUTION || '1k',
+    }
+  }
+
+  const generateImage = async (prompt) => {
+    const { apiRoot, apiKey, model: imageModel, size, resolution } = getImageApiConfig()
+    if (!apiKey && !import.meta.env.VITE_IMAGE_API_PROXY_URL) {
+      setMessages((current) => [...current, {
+        role: 'assistant',
+        content: '图片生成接口还没有连接。请先配置 VITE_IMAGE_API_PROXY_URL；如果只是本地测试，也可以临时配置 VITE_APIMART_API_KEY。',
+      }])
+      setIsThinking(false)
+      return
+    }
+
+    try {
+      const headers = { 'Content-Type': 'application/json' }
+      if (apiKey) headers.Authorization = `Bearer ${apiKey}`
+      const submitResponse = await fetch(`${apiRoot}/images/generations`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ model: imageModel, prompt, n: 1, size, resolution }),
+      })
+      const submitData = await submitResponse.json()
+      if (!submitResponse.ok || !submitData?.data?.[0]?.task_id) {
+        throw new Error(submitData?.error?.message || '图片任务提交失败')
+      }
+
+      const taskId = submitData.data[0].task_id
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 2500))
+        const taskResponse = await fetch(`${apiRoot}/tasks/${taskId}`, { headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {} })
+        const taskData = await taskResponse.json()
+        const task = taskData?.data
+        if (task?.status === 'completed') {
+          const imageUrl = task?.result?.images?.[0]?.url?.[0]
+          if (!imageUrl) throw new Error('任务完成，但没有返回图片地址')
+          setMessages((current) => [...current, { role: 'assistant', content: '图片已生成，可以继续调整提示词。', imageUrl }])
+          setIsThinking(false)
+          return
+        }
+        if (task?.status === 'failed') throw new Error(task?.error?.message || '图片生成失败')
+      }
+      throw new Error('图片生成等待超时，请稍后查看任务状态')
+    } catch (error) {
+      setMessages((current) => [...current, { role: 'assistant', content: `图片生成失败：${error.message}` }])
+      setIsThinking(false)
+    }
+  }
+
   const sendMessage = async (text = input) => {
     const content = text.trim()
     if (!content || isThinking) return
@@ -76,8 +136,14 @@ function App() {
     setMessages((current) => [...current, { role: 'user', content }])
     setIsThinking(true)
 
-    const apiKey = import.meta.env.VITE_DEEPSEEK_API_KEY
-    const baseUrl = import.meta.env.VITE_DEEPSEEK_BASE_URL || 'https://api.deepseek.com'
+    if (generationMode === 'image') {
+      await generateImage(content)
+      return
+    }
+
+    const deepseekProxyUrl = import.meta.env.VITE_DEEPSEEK_API_PROXY_URL?.replace(/\/$/, '')
+    const apiKey = deepseekProxyUrl ? '' : import.meta.env.VITE_DEEPSEEK_API_KEY
+    const baseUrl = deepseekProxyUrl || (import.meta.env.VITE_DEEPSEEK_BASE_URL || 'https://api.deepseek.com')
     if (apiKey) {
       try {
         const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
@@ -114,6 +180,13 @@ function App() {
     setMessages([])
     setInput('')
     setActiveNav('新对话')
+    setGenerationMode('chat')
+    setSidebarOpen(false)
+  }
+
+  const activateImageMode = (prompt = '') => {
+    setGenerationMode('image')
+    setInput(prompt)
     setSidebarOpen(false)
   }
 
@@ -177,22 +250,23 @@ function App() {
               <p className="welcome-copy">我是你的思考搭子，可以帮你写作、分析、学习，也可以只是陪你聊聊。</p>
               <div className="mode-switch" role="tablist" aria-label="工作模式"><button className="mode active" role="tab">对话</button><button className="mode" role="tab">工作</button></div>
               <div className="prompt-grid">
-                {promptCards.map(({ icon: Icon, title, copy }) => <button className="prompt-card" key={title} onClick={() => sendMessage(title)}><span className="prompt-icon"><Icon size={18} weight="Outline" /></span><span className="prompt-text"><b>{title}</b><small>{copy}</small></span><ArrowRight className="prompt-arrow" size={16} /></button>)}
+                {promptCards.map(({ icon: Icon, title, copy }) => <button className="prompt-card" key={title} onClick={() => title === '生成一张图片' ? activateImageMode() : sendMessage(title)}><span className="prompt-icon"><Icon size={18} weight="Outline" /></span><span className="prompt-text"><b>{title}</b><small>{copy}</small></span><ArrowRight className="prompt-arrow" size={16} /></button>)}
               </div>
             </div>
           ) : (
             <div className="message-thread">
               <div className="thread-intro"><span className="mini-mark"><img src={logoUrl} alt="" /></span><span>佛祖 AI · {model}</span></div>
-              {messages.map((message, index) => <div className={`message-block ${message.role}`} key={`${message.role}-${index}`}><div className="message-avatar">{message.role === 'user' ? '林' : <img src={logoUrl} alt="" />}</div><div className="message-body"><div className="message-author">{message.role === 'user' ? '你' : '佛祖 AI'}</div><p>{message.content}</p></div></div>)}
+              {messages.map((message, index) => <div className={`message-block ${message.role}`} key={`${message.role}-${index}`}><div className="message-avatar">{message.role === 'user' ? '林' : <img src={logoUrl} alt="" />}</div><div className="message-body"><div className="message-author">{message.role === 'user' ? '你' : '佛祖 AI'}</div><p>{message.content}</p>{message.imageUrl && <img className="generated-image" src={message.imageUrl} alt="根据提示词生成的图片" />}</div></div>)}
               {isThinking && <div className="message-block assistant"><div className="message-avatar"><img src={logoUrl} alt="" /></div><div className="message-body"><div className="message-author">佛祖 AI</div><div className="thinking"><span /><span /><span /></div></div></div>}
             </div>
           )}
         </section>
 
         <div className="composer-wrap">
-          <div className="composer-shell">
-            <textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage() } }} placeholder="问我任何问题，或描述你想完成的事" rows="1" aria-label="输入消息" />
-            <div className="composer-toolbar"><div className="composer-actions"><button className={`tool-button ${attached ? 'active' : ''}`} onClick={() => setAttached(!attached)} aria-label="添加附件"><Paperclip size={17} /></button><button className="tool-button" aria-label="添加图片"><Image size={17} /></button><button className="tool-button" aria-label="语音输入"><Mic size={17} /></button>{attached && <span className="attachment-hint">已准备添加附件</span>}</div><div className="composer-right"><div className="model-select-wrap"><button className="model-select" onClick={() => setModelOpen(!modelOpen)}><span className="model-dot" />{model}<ChevronDown size={14} /></button>{modelOpen && <div className="model-menu"><button className={model === '高级佛祖模型' ? 'selected' : ''} onClick={() => { setModel('高级佛祖模型'); setModelOpen(false) }}>高级佛祖模型<small>深度思考</small></button><button className={model === '导管佛祖模型' ? 'selected' : ''} onClick={() => { setModel('导管佛祖模型'); setModelOpen(false) }}>导管佛祖模型<small>快速对话</small></button></div>}</div><button className={`send-button ${input.trim() ? 'ready' : ''}`} onClick={() => sendMessage()} aria-label="发送"><Send size={17} weight="Outline" /></button></div></div>
+            <div className="composer-shell">
+            {generationMode === 'image' && <div className="composer-mode"><ImageSparkle size={15} /><span>图片生成 · GPT-Image-2</span><button onClick={() => setGenerationMode('chat')}>退出</button></div>}
+            <textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage() } }} placeholder={generationMode === 'image' ? '描述你想生成的图片' : '问我任何问题，或描述你想完成的事'} rows="1" aria-label="输入消息" />
+            <div className="composer-toolbar"><div className="composer-actions"><button className={`tool-button ${attached ? 'active' : ''}`} onClick={() => setAttached(!attached)} aria-label="添加附件"><Paperclip size={17} /></button><button className="tool-button" aria-label="添加图片"><Image size={17} /></button><button className={`tool-button ${generationMode === 'image' ? 'active' : ''}`} onClick={() => setGenerationMode(generationMode === 'image' ? 'chat' : 'image')} aria-label="图片生成"><ImageSparkle size={17} /></button><button className="tool-button" aria-label="语音输入"><Mic size={17} /></button>{attached && <span className="attachment-hint">已准备添加附件</span>}</div><div className="composer-right">{generationMode === 'chat' && <div className="model-select-wrap"><button className="model-select" onClick={() => setModelOpen(!modelOpen)}><span className="model-dot" />{model}<ChevronDown size={14} /></button>{modelOpen && <div className="model-menu"><button className={model === '高级佛祖模型' ? 'selected' : ''} onClick={() => { setModel('高级佛祖模型'); setModelOpen(false) }}>高级佛祖模型<small>深度思考</small></button><button className={model === '导管佛祖模型' ? 'selected' : ''} onClick={() => { setModel('导管佛祖模型'); setModelOpen(false) }}>导管佛祖模型<small>快速对话</small></button></div>}</div>}{generationMode === 'image' && <span className="image-settings">{import.meta.env.VITE_APIMART_IMAGE_SIZE || '1:1'} · {(import.meta.env.VITE_APIMART_IMAGE_RESOLUTION || '1k').toUpperCase()}</span>}<button className={`send-button ${input.trim() ? 'ready' : ''}`} onClick={() => sendMessage()} aria-label={generationMode === 'image' ? '生成图片' : '发送'}><Send size={17} weight="Outline" /></button></div></div>
           </div>
           <p className="composer-note">佛祖 AI 可能会犯错，请核对重要信息 · <button>使用说明</button></p>
         </div>

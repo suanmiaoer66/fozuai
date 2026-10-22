@@ -29,9 +29,14 @@ jobs:
         run: npm ci
       - name: Build
         env:
-          VITE_DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY || vars.DEEPSEEK_API_KEY }}
           VITE_DEEPSEEK_BASE_URL: ${{ vars.DEEPSEEK_BASE_URL }}
+          VITE_DEEPSEEK_API_PROXY_URL: ${{ vars.DEEPSEEK_API_PROXY_URL }}
           VITE_DEEPSEEK_VISION_MODEL: ${{ vars.DEEPSEEK_VISION_MODEL }}
+          VITE_APIMART_BASE_URL: ${{ vars.APIMART_BASE_URL }}
+          VITE_APIMART_IMAGE_MODEL: ${{ vars.APIMART_IMAGE_MODEL }}
+          VITE_APIMART_IMAGE_SIZE: ${{ vars.APIMART_IMAGE_SIZE }}
+          VITE_APIMART_IMAGE_RESOLUTION: ${{ vars.APIMART_IMAGE_RESOLUTION }}
+          VITE_IMAGE_API_PROXY_URL: ${{ vars.IMAGE_API_PROXY_URL }}
         run: npm run build
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
