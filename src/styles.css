@@ -24,8 +24,8 @@ button:focus-visible, textarea:focus-visible { outline: 3px solid rgba(12, 157, 
 .app-shell { min-height: 100dvh; display: grid; grid-template-columns: 274px minmax(0, 1fr); background: var(--canvas); }
 .sidebar { display: flex; flex-direction: column; min-height: 100dvh; background: rgba(255, 255, 255, 0.96); border-right: 1px solid var(--line); padding: 21px 14px 16px; position: relative; z-index: 5; }
 .brand-row { display: flex; align-items: center; gap: 11px; padding: 1px 11px 24px; }
-.brand-mark { width: 34px; height: 34px; border-radius: 12px; background: #163c39; color: #d7faf1; display: grid; place-items: center; font-weight: 800; font-size: 17px; box-shadow: 0 7px 18px rgba(12, 92, 81, .18); position: relative; }
-.brand-mark::after { content: ""; width: 7px; height: 7px; border: 1.5px solid #b0eee0; border-radius: 50%; position: absolute; top: 5px; right: 5px; opacity: .8; }
+.brand-mark { width: 34px; height: 34px; border-radius: 12px; overflow: hidden; background: #163c39; display: grid; place-items: center; box-shadow: 0 7px 18px rgba(12, 92, 81, .18); position: relative; }
+.brand-mark img { width: 100%; height: 100%; display: block; object-fit: cover; }
 .brand-name { font-size: 15px; font-weight: 750; letter-spacing: -.02em; }
 .brand-subtitle { color: #99a2ab; font-size: 11px; margin-top: 3px; }
 .sidebar-close, .mobile-menu { display: none !important; }
@@ -79,7 +79,8 @@ button:focus-visible, textarea:focus-visible { outline: 3px solid rgba(12, 157, 
 .conversation { flex: 1; min-height: 0; overflow: auto; display: flex; justify-content: center; padding: 64px 34px 208px; }
 .welcome-panel { width: min(790px, 100%); text-align: center; margin-top: clamp(13px, 7vh, 68px); }
 .welcome-orb { width: 74px; height: 74px; margin: 0 auto 21px; position: relative; display: grid; place-items: center; }
-.orb-core { width: 56px; height: 56px; border-radius: 20px; display: grid; place-items: center; background: #163c39; color: #d6f9ef; box-shadow: 0 13px 28px rgba(21,82,73,.17); font-size: 25px; font-weight: 800; position: relative; z-index: 2; }
+.orb-core { width: 56px; height: 56px; border-radius: 20px; overflow: hidden; display: grid; place-items: center; background: #163c39; box-shadow: 0 13px 28px rgba(21,82,73,.17); position: relative; z-index: 2; }
+.orb-core img { width: 100%; height: 100%; display: block; object-fit: cover; }
 .orb-core::before { content: ""; position: absolute; inset: 7px; border: 1px solid rgba(213,249,240,.38); border-radius: 15px; }
 .orb-ring { position: absolute; border: 1px solid rgba(12,157,134,.13); border-radius: 50%; }
 .ring-one { inset: -3px; }
@@ -101,10 +102,12 @@ button:focus-visible, textarea:focus-visible { outline: 3px solid rgba(12, 157, 
 .has-messages { justify-content: center; padding-top: 45px; }
 .message-thread { width: min(780px, 100%); display: grid; gap: 24px; align-content: start; }
 .thread-intro { display: flex; align-items: center; gap: 8px; color: #94a0a4; font-size: 11px; padding-bottom: 10px; border-bottom: 1px solid #e7edef; }
-.mini-mark { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 7px; color: #d6f9ef; background: #163c39; font-size: 11px; font-weight: 700; }
+.mini-mark { width: 22px; height: 22px; overflow: hidden; display: grid; place-items: center; border-radius: 7px; color: #d6f9ef; background: #163c39; font-size: 11px; font-weight: 700; }
+.mini-mark img { width: 100%; height: 100%; display: block; object-fit: cover; }
 .message-block { display: flex; gap: 12px; max-width: 88%; }
 .message-block.user { margin-left: auto; flex-direction: row-reverse; }
-.message-avatar { width: 29px; height: 29px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 9px; background: #edf2f4; color: #73828a; font-size: 11px; font-weight: 700; }
+.message-avatar { width: 29px; height: 29px; overflow: hidden; flex: 0 0 auto; display: grid; place-items: center; border-radius: 9px; background: #edf2f4; color: #73828a; font-size: 11px; font-weight: 700; }
+.message-avatar img { width: 100%; height: 100%; display: block; object-fit: cover; }
 .message-block.assistant .message-avatar { color: #d6f9ef; background: #163c39; }
 .message-block.user .message-avatar { color: #2b7166; background: #d8eee9; }
 .message-body { min-width: 0; }

@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import logoUrl from '../logo.ico'
 import { ArrowLeft } from 'reicon-react/icons/ArrowLeft'
 import { ArrowRight } from 'reicon-react/icons/ArrowRight'
 import { ChevronDown } from 'reicon-react/icons/ChevronDown'
@@ -57,7 +58,7 @@ function App() {
   const [messages, setMessages] = useState([])
   const [isThinking, setIsThinking] = useState(false)
   const [modelOpen, setModelOpen] = useState(false)
-  const [model, setModel] = useState('DeepSeek V3')
+  const [model, setModel] = useState('高级佛祖模型')
   const [attached, setAttached] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
@@ -76,13 +77,14 @@ function App() {
     setIsThinking(true)
 
     const apiKey = import.meta.env.VITE_DEEPSEEK_API_KEY
+    const baseUrl = import.meta.env.VITE_DEEPSEEK_BASE_URL || 'https://api.deepseek.com'
     if (apiKey) {
       try {
-        const response = await fetch('https://api.deepseek.com/chat/completions', {
+        const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
           body: JSON.stringify({
-            model: model === 'DeepSeek R1' ? 'deepseek-reasoner' : 'deepseek-chat',
+            model: model === '高级佛祖模型' ? 'deepseek-reasoner' : 'deepseek-chat',
             messages: [
               { role: 'system', content: '你是佛祖 AI，一位温和、清晰、擅长拆解复杂问题的中文助手。' },
               ...messages.map((item) => ({ role: item.role, content: item.content })),
@@ -119,7 +121,7 @@ function App() {
     <div className="app-shell">
       <aside className={`sidebar ${sidebarOpen ? 'is-open' : ''}`}>
         <div className="brand-row">
-          <div className="brand-mark" aria-hidden="true"><span>佛</span></div>
+          <div className="brand-mark" aria-hidden="true"><img src={logoUrl} alt="" /></div>
           <div>
             <div className="brand-name">佛祖 AI</div>
             <div className="brand-subtitle">把复杂的事，讲明白</div>
@@ -152,7 +154,7 @@ function App() {
 
         <div className="sidebar-bottom">
           <div className="usage-card">
-            <div className="usage-top"><span className="online-dot" /> DeepSeek 已连接</div>
+            <div className="usage-top"><span className="online-dot" /> {model} 已连接</div>
             <div className="usage-copy">今天的思考额度还剩 86%</div>
             <div className="usage-track"><span /></div>
           </div>
@@ -169,7 +171,7 @@ function App() {
         <section className={`conversation ${messages.length ? 'has-messages' : ''}`}>
           {messages.length === 0 ? (
             <div className="welcome-panel">
-              <div className="welcome-orb"><div className="orb-core">佛</div><span className="orb-ring ring-one" /><span className="orb-ring ring-two" /></div>
+              <div className="welcome-orb"><div className="orb-core"><img src={logoUrl} alt="" /></div><span className="orb-ring ring-one" /><span className="orb-ring ring-two" /></div>
               <p className="eyebrow">DEEPSEEK POWERED</p>
               <h1>{greeting}</h1>
               <p className="welcome-copy">我是你的思考搭子，可以帮你写作、分析、学习，也可以只是陪你聊聊。</p>
@@ -180,9 +182,9 @@ function App() {
             </div>
           ) : (
             <div className="message-thread">
-              <div className="thread-intro"><span className="mini-mark">佛</span><span>佛祖 AI · {model}</span></div>
-              {messages.map((message, index) => <div className={`message-block ${message.role}`} key={`${message.role}-${index}`}><div className="message-avatar">{message.role === 'user' ? '林' : '佛'}</div><div className="message-body"><div className="message-author">{message.role === 'user' ? '你' : '佛祖 AI'}</div><p>{message.content}</p></div></div>)}
-              {isThinking && <div className="message-block assistant"><div className="message-avatar">佛</div><div className="message-body"><div className="message-author">佛祖 AI</div><div className="thinking"><span /><span /><span /></div></div></div>}
+              <div className="thread-intro"><span className="mini-mark"><img src={logoUrl} alt="" /></span><span>佛祖 AI · {model}</span></div>
+              {messages.map((message, index) => <div className={`message-block ${message.role}`} key={`${message.role}-${index}`}><div className="message-avatar">{message.role === 'user' ? '林' : <img src={logoUrl} alt="" />}</div><div className="message-body"><div className="message-author">{message.role === 'user' ? '你' : '佛祖 AI'}</div><p>{message.content}</p></div></div>)}
+              {isThinking && <div className="message-block assistant"><div className="message-avatar"><img src={logoUrl} alt="" /></div><div className="message-body"><div className="message-author">佛祖 AI</div><div className="thinking"><span /><span /><span /></div></div></div>}
             </div>
           )}
         </section>
@@ -190,7 +192,7 @@ function App() {
         <div className="composer-wrap">
           <div className="composer-shell">
             <textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage() } }} placeholder="问我任何问题，或描述你想完成的事" rows="1" aria-label="输入消息" />
-            <div className="composer-toolbar"><div className="composer-actions"><button className={`tool-button ${attached ? 'active' : ''}`} onClick={() => setAttached(!attached)} aria-label="添加附件"><Paperclip size={17} /></button><button className="tool-button" aria-label="添加图片"><Image size={17} /></button><button className="tool-button" aria-label="语音输入"><Mic size={17} /></button>{attached && <span className="attachment-hint">已准备添加附件</span>}</div><div className="composer-right"><div className="model-select-wrap"><button className="model-select" onClick={() => setModelOpen(!modelOpen)}><span className="model-dot" />{model}<ChevronDown size={14} /></button>{modelOpen && <div className="model-menu"><button className={model === 'DeepSeek V3' ? 'selected' : ''} onClick={() => { setModel('DeepSeek V3'); setModelOpen(false) }}>DeepSeek V3<small>快速对话</small></button><button className={model === 'DeepSeek R1' ? 'selected' : ''} onClick={() => { setModel('DeepSeek R1'); setModelOpen(false) }}>DeepSeek R1<small>深度思考</small></button></div>}</div><button className={`send-button ${input.trim() ? 'ready' : ''}`} onClick={() => sendMessage()} aria-label="发送"><Send size={17} weight="Outline" /></button></div></div>
+            <div className="composer-toolbar"><div className="composer-actions"><button className={`tool-button ${attached ? 'active' : ''}`} onClick={() => setAttached(!attached)} aria-label="添加附件"><Paperclip size={17} /></button><button className="tool-button" aria-label="添加图片"><Image size={17} /></button><button className="tool-button" aria-label="语音输入"><Mic size={17} /></button>{attached && <span className="attachment-hint">已准备添加附件</span>}</div><div className="composer-right"><div className="model-select-wrap"><button className="model-select" onClick={() => setModelOpen(!modelOpen)}><span className="model-dot" />{model}<ChevronDown size={14} /></button>{modelOpen && <div className="model-menu"><button className={model === '高级佛祖模型' ? 'selected' : ''} onClick={() => { setModel('高级佛祖模型'); setModelOpen(false) }}>高级佛祖模型<small>深度思考</small></button><button className={model === '导管佛祖模型' ? 'selected' : ''} onClick={() => { setModel('导管佛祖模型'); setModelOpen(false) }}>导管佛祖模型<small>快速对话</small></button></div>}</div><button className={`send-button ${input.trim() ? 'ready' : ''}`} onClick={() => sendMessage()} aria-label="发送"><Send size={17} weight="Outline" /></button></div></div>
           </div>
           <p className="composer-note">佛祖 AI 可能会犯错，请核对重要信息 · <button>使用说明</button></p>
         </div>
