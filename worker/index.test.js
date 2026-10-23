@@ -95,6 +95,74 @@ test('CORS preflight allows only the frontend origin and required headers', asyn
   assert.equal(denied.status, 403)
 })
 
+test('explicit CORS list allows the new and existing sites while echoing only the requesting origin', async () => {
+  const newOrigin = 'https://assistant.example'
+  const migrationEnv = { ...env, ALLOWED_ORIGINS: ` ${newOrigin}, ${env.ALLOWED_ORIGIN} ` }
+  let calls = 0
+  for (const origin of [newOrigin, env.ALLOWED_ORIGIN]) {
+    const response = await handleRequest(request('/chat/completions', {
+      origin, body: { model: '导管佛祖模型', messages: [{ role: 'user', content: '你好' }] },
+    }), migrationEnv, async () => {
+      calls += 1
+      return jsonResponse({ choices: [{ message: { content: '可以使用。' } }] })
+    })
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('Access-Control-Allow-Origin'), origin)
+    assert.equal(response.headers.get('Vary'), 'Origin')
+    assert.equal((await read(response)).choices[0].message.content, '可以使用。')
+  }
+  assert.equal(calls, 2)
+})
+
+test('both CORS origins can preflight chat and image endpoints with matching headers', async () => {
+  const origins = ['https://assistant.example', env.ALLOWED_ORIGIN]
+  const migrationEnv = { ...env, ALLOWED_ORIGINS: origins.join(',') }
+  for (const origin of origins) {
+    for (const path of ['/chat/completions', '/v1/images/generations']) {
+      const response = await handleRequest(new Request(`https://fozuai-api.example${path}`, {
+        method: 'OPTIONS',
+        headers: { Origin: origin, 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'content-type' },
+      }), migrationEnv, async () => assert.fail('preflight must not call an upstream'))
+      assert.equal(response.status, 204)
+      assert.equal(response.headers.get('Access-Control-Allow-Origin'), origin)
+      assert.equal(response.headers.get('Access-Control-Allow-Methods'), 'POST, OPTIONS')
+      assert.match(response.headers.get('Access-Control-Allow-Headers'), /Content-Type/)
+      assert.equal(response.headers.get('Vary'), 'Origin')
+    }
+  }
+})
+
+test('an explicit CORS list rejects unlisted sites and does not silently add the legacy origin', async () => {
+  const migrationEnv = { ...env, ALLOWED_ORIGINS: 'https://assistant.example' }
+  for (const origin of [env.ALLOWED_ORIGIN, 'https://evil.example', 'https://assistant.example.evil.example', 'null']) {
+    for (const method of ['GET', 'OPTIONS']) {
+      const response = await handleRequest(new Request('https://fozuai-api.example/health', {
+        method,
+        headers: { Origin: origin, 'Access-Control-Request-Method': 'GET' },
+      }), migrationEnv, async () => assert.fail('denied origin must not call an upstream'))
+      assert.equal(response.status, 403)
+      assert.equal(response.headers.get('Access-Control-Allow-Origin'), null)
+      assert.equal((await read(response)).error.code, 'origin_not_allowed')
+    }
+  }
+})
+
+test('missing or blank CORS lists fall back to the legacy origin and then the GitHub origin', async () => {
+  const legacy = 'https://legacy.example'
+  for (const configuredList of [undefined, '', '   ']) {
+    const legacyResponse = await handleRequest(request('/health', { method: 'GET', origin: legacy }), {
+      ...env, ALLOWED_ORIGINS: configuredList, ALLOWED_ORIGIN: ` ${legacy} `,
+    })
+    assert.equal(legacyResponse.status, 200)
+    assert.equal(legacyResponse.headers.get('Access-Control-Allow-Origin'), legacy)
+    const defaultResponse = await handleRequest(request('/health', { method: 'GET' }), {
+      ...env, ALLOWED_ORIGINS: configuredList, ALLOWED_ORIGIN: '',
+    })
+    assert.equal(defaultResponse.status, 200)
+    assert.equal(defaultResponse.headers.get('Access-Control-Allow-Origin'), env.ALLOWED_ORIGIN)
+  }
+})
+
 test('image submission and polling need no password and return only safe fields', async () => {
   const calls = []
   const submit = await handleRequest(request('/v1/images/generations', { body: { model: 'gpt-image-2', prompt: '一朵莲花', size: '16:9', resolution: '2k', official_fallback: true } }), env, async (url, options) => {

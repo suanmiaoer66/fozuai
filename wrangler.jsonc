@@ -5,7 +5,7 @@
   "compatibility_date": "2026-10-01",
   "workers_dev": true,
   "vars": {
-    "ALLOWED_ORIGIN": "https://suanmiaoer66.github.io",
+    "ALLOWED_ORIGINS": "https://suanmiaoer66.github.io,https://fozu.zoreai.cn",
     "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
     "DEEPSEEK_CHAT_MODEL": "deepseek-flash",
     "DEEPSEEK_REASONING_MODEL": "deepseek-flash",

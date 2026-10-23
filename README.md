@@ -47,11 +47,11 @@ Pages 工作流会在推送到 `main` 时运行；Worker 工作流只在你主�
 
 | Variable | 值 |
 | --- | --- |
-| `DEEPSEEK_API_PROXY_URL` | 部署 Worker 后得到的地址，例如 `https://fozuai-api.<账户子域>.workers.dev` |
+| `DEEPSEEK_API_PROXY_URL` | Worker 或下文 Pages 网关的 HTTPS 根地址，例如 `https://fozuai-api.<账户子域>.workers.dev` |
 | `APIMART_IMAGE_MODEL` | `gpt-image-2` |
 | `APIMART_IMAGE_SIZE` | `1:1` |
 | `APIMART_IMAGE_RESOLUTION` | `1k` |
-| `IMAGE_API_PROXY_URL` | 与 `DEEPSEEK_API_PROXY_URL` 使用同一个 Worker 地址 |
+| `IMAGE_API_PROXY_URL` | 与 `DEEPSEEK_API_PROXY_URL` 使用同一个接口地址 |
 
 仓库中已有的 `DEEPSEEK_BASE_URL`、`DEEPSEEK_VISION_MODEL` 和 `APIMART_BASE_URL` Variables 可以保留；当前 Worker 直接使用内置默认地址和模型配置。
 
@@ -72,6 +72,37 @@ GitHub Pages 是静态托管，GitHub Secrets 和 Variables 不会自动出现�
 
 ## GitHub Pages
 
-仓库已带有 `.github/workflows/deploy.yml`。推送到 `main` 后，GitHub Actions 会构建 `dist` 并发布到 Pages，站点路径为 `/fozuai/`。
+仓库已带有 `.github/workflows/deploy.yml`。推送到 `main` 后，GitHub Actions 会构建 `dist` 并发布到 Pages。Vite 使用相对资源路径 `base: './'`，同一构建支持原 GitHub 地址的 `/fozuai/` 路径及自定义子域名的根路径。
 
 图标来自 [Reicon](https://github.com/dqev/reicon) 的 `reicon-react` 包，品牌头像使用仓库中的 `logo.ico`。
+
+## 使用外部 DNS 的自定义子域名
+
+DNS 可以继续由现有服务商管理。静态前端仍部署在 GitHub Pages，接口通过已创建的 Cloudflare Pages 项目 `fozuai-gateway` 转发给原 Worker。已确认网页域名为 `fozu.zoreai.cn`，接口域名为 `fozu-api.zoreai.cn`；以下是目标配置及部署步骤，不代表 DNS、证书和上线验证已完成。
+
+```text
+网页：fozu.zoreai.cn → GitHub Pages
+接口：fozu-api.zoreai.cn → fozuai-gateway.pages.dev → FOZU_API → fozuai-api
+```
+
+1. 在仓库根目录部署网关：
+
+   ```bash
+   npx wrangler pages deploy --cwd gateway --project-name fozuai-gateway --branch main
+   ```
+
+   [gateway/wrangler.jsonc](gateway/wrangler.jsonc) 已配置 Service Binding `FOZU_API` → `fozuai-api`。网关在 Cloudflare 内部调用 Worker，原 `DEEPSEEK_API_KEY`、`APIMART_API_KEY` Secrets 继续保存在 Worker，无需复制到网关或前端。
+
+2. **先关联域名，再添加 DNS CNAME。** 在 Cloudflare 的 `fozuai-gateway` 项目 **Custom domains** 中添加 `fozu-api.zoreai.cn`，随后在现有 DNS 服务商处为 `zoreai.cn` 添加 `fozu-api` CNAME，目标为 `fozuai-gateway.pages.dev`。仅添加 DNS 记录不能完成 Pages 域名关联。[Cloudflare 自定义域名说明](https://developers.cloudflare.com/pages/configuration/custom-domains/)
+
+3. 在 GitHub 仓库 **Settings → Pages → Custom domain** 中添加 `fozu.zoreai.cn`，随后在 `zoreai.cn` 的 DNS 中添加 `fozu` CNAME，目标为 `suanmiaoer66.github.io`，不含协议或 `/fozuai/`。待证书就绪后启用 HTTPS。当前使用自定义 Actions 部署，不需要仓库内的 `CNAME` 文件。[GitHub 自定义域名说明](https://docs.github.com/en/pages/configuring-a-custom-domain-for-your-github-pages-site/managing-a-custom-domain-for-your-github-pages-site)
+
+4. 配置 GitHub Actions **Variables**：
+
+   | Variable | 值 |
+   | --- | --- |
+   | `ALLOWED_ORIGINS` | `https://suanmiaoer66.github.io,https://fozu.zoreai.cn` |
+   | `DEEPSEEK_API_PROXY_URL` | `https://fozu-api.zoreai.cn` |
+   | `IMAGE_API_PROXY_URL` | `https://fozu-api.zoreai.cn` |
+
+   `ALLOWED_ORIGINS` 是允许访问接口的**网页 Origin**，包含协议，不含路径；多个值用逗号分隔，迁移期间同时保留旧 GitHub Origin。该列表优先于旧的 `ALLOWED_ORIGIN`；未配置列表时回退到旧变量，再回退到默认 GitHub Origin。先运行 **Deploy Cloudflare Worker** 应用 CORS 配置，再运行 **Deploy to GitHub Pages** 更新前端接口地址。HTTPS 就绪后检查新接口的 `/health` 及新旧网页入口；`/health` 不会调用付费模型。

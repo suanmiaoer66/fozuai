@@ -1,0 +1,9 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "fozuai-gateway",
+  "pages_build_output_dir": "./public",
+  "compatibility_date": "2026-10-23",
+  "services": [
+    { "binding": "FOZU_API", "service": "fozuai-api" }
+  ]
+}

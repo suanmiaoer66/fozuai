@@ -36,6 +36,14 @@ function configuredSecret(value) {
   return typeof value === 'string' && value.trim().length > 0 && !/[\r\n]/.test(value)
 }
 
+function isAllowedOrigin(origin, env) {
+  if (!origin || !/^https?:\/\//.test(origin)) return false
+  const configuredList = typeof env.ALLOWED_ORIGINS === 'string' ? env.ALLOWED_ORIGINS.trim() : ''
+  const legacyOrigin = typeof env.ALLOWED_ORIGIN === 'string' ? env.ALLOWED_ORIGIN.trim() : ''
+  const allowed = configuredList || legacyOrigin || DEFAULT_ORIGIN
+  return allowed.split(',').some((entry) => entry.trim() === origin)
+}
+
 function responseHeaders(request, env) {
   const headers = new Headers({
     'Content-Type': 'application/json; charset=utf-8',
@@ -43,7 +51,7 @@ function responseHeaders(request, env) {
     'X-Content-Type-Options': 'nosniff',
     Vary: 'Origin',
   })
-  if (request.headers.get('Origin') === (env.ALLOWED_ORIGIN || DEFAULT_ORIGIN)) {
+  if (isAllowedOrigin(request.headers.get('Origin'), env)) {
     headers.set('Access-Control-Allow-Origin', request.headers.get('Origin'))
   }
   return headers
@@ -362,7 +370,7 @@ export async function handleRequest(request, env, fetchImpl = fetch, timeoutMs =
   const json = (data, status = 200) => new Response(JSON.stringify(data), { status, headers })
   try {
     const origin = request.headers.get('Origin')
-    if (origin && origin !== (env.ALLOWED_ORIGIN || DEFAULT_ORIGIN)) throw new HttpError(403, 'origin_not_allowed', '此网站无权访问服务。')
+    if (origin && !isAllowedOrigin(origin, env)) throw new HttpError(403, 'origin_not_allowed', '此网站无权访问服务。')
     const url = new URL(request.url)
     const isChat = ['/chat/completions', '/v1/chat/completions'].includes(url.pathname)
     const isImage = url.pathname === '/v1/images/generations'
