@@ -14,7 +14,7 @@ npm run dev
 - 高级佛祖模型：由 Worker 映射到 `DEEPSEEK_REASONING_MODEL`（未单独配置时使用 `deepseek-flash` 的深度思考模式）
 - 导管佛祖模型：由 Worker 映射到 `DEEPSEEK_CHAT_MODEL`（默认 `deepseek-flash`）
 
-线上页面只请求 Cloudflare Worker 代理，浏览器不接触 DeepSeek 或 APIMart 的 API Key。Worker 也兼容 `deepseek-reasoner` 和 `deepseek-chat` 这两个旧模型 ID。
+线上页面通过 Cloudflare Pages 网关请求 Worker 代理，浏览器不接触 DeepSeek 或 APIMart 的 API Key。Worker 也兼容 `deepseek-reasoner` 和 `deepseek-chat` 这两个旧模型 ID。
 
 图片生成接入 APIMart 的 GPT-Image-2：Worker 提交任务到 `/v1/images/generations`，再轮询 `/v1/tasks/{task_id}`，完成后展示返回图片。页面默认使用 `gpt-image-2`、`1:1`、`1k`。
 
@@ -26,10 +26,11 @@ npm run dev
 
 ## 线上架构
 
-GitHub Pages 只负责发布静态前端，Cloudflare Worker 负责保存 API Key，并代理 DeepSeek 对话和 APIMart 生图请求。打开网页即可直接使用对话和生图，无需输入网站访问口令：
+GitHub Pages 发布 [fozu.zoreai.cn](https://fozu.zoreai.cn) 的静态前端；[fozu-api.zoreai.cn](https://fozu-api.zoreai.cn) 通过 Cloudflare Pages 网关访问 Worker。Worker 保存 API Key，并代理 DeepSeek 对话和 APIMart 生图请求，无需网站访问口令：
 
 ```text
-浏览器 → GitHub Pages → Cloudflare Worker → DeepSeek / APIMart
+网页资源：浏览器 → fozu.zoreai.cn → GitHub Pages
+模型请求：浏览器 → fozu-api.zoreai.cn → Pages 网关 → Cloudflare Worker → DeepSeek / APIMart
 ```
 
 仓库已带有两个 GitHub Actions 工作流：
@@ -39,7 +40,7 @@ GitHub Pages 只负责发布静态前端，Cloudflare Worker 负责保存 API Ke
 
 Pages 工作流会在推送到 `main` 时运行；Worker 工作流只在你主动选择 `workflow_dispatch` 时运行。
 
-如果不想配置 Cloudflare 部署 Token，最简单的方式是直接在 Cloudflare 控制台手动创建 Worker：新建一个 Worker，复制 [worker/index.js](worker/index.js) 的代码，部署后在 Worker 的 **Settings → Variables and Secrets** 中添加两个 Secrets：`DEEPSEEK_API_KEY`、`APIMART_API_KEY`。代码里的 DeepSeek、APIMart 地址和图片默认参数已经写好，不需要再配置。复制 Worker 的 `workers.dev` 地址，填入下面两个 GitHub Variables，然后重新运行 Pages 工作流即可。
+也可以在 Cloudflare 控制台手动部署 Worker：新建或更新 `fozuai-api`，复制 [worker/index.js](worker/index.js) 的代码，并在 **Settings → Variables and Secrets** 中配置 `DEEPSEEK_API_KEY`、`APIMART_API_KEY` Secrets 及下文的 `ALLOWED_ORIGINS`。网关通过 Service Binding 访问该 Worker；重新部署 Worker 时，前端的两个代理 Variables 继续保留自定义接口地址。
 
 ## GitHub 配置
 
@@ -47,13 +48,14 @@ Pages 工作流会在推送到 `main` 时运行；Worker 工作流只在你主�
 
 | Variable | 值 |
 | --- | --- |
-| `DEEPSEEK_API_PROXY_URL` | Worker 或下文 Pages 网关的 HTTPS 根地址，例如 `https://fozuai-api.<账户子域>.workers.dev` |
+| `DEEPSEEK_API_PROXY_URL` | `https://fozu-api.zoreai.cn` |
 | `APIMART_IMAGE_MODEL` | `gpt-image-2` |
 | `APIMART_IMAGE_SIZE` | `1:1` |
 | `APIMART_IMAGE_RESOLUTION` | `1k` |
-| `IMAGE_API_PROXY_URL` | 与 `DEEPSEEK_API_PROXY_URL` 使用同一个接口地址 |
+| `IMAGE_API_PROXY_URL` | `https://fozu-api.zoreai.cn` |
+| `ALLOWED_ORIGINS` | `https://suanmiaoer66.github.io,https://fozu.zoreai.cn` |
 
-仓库中已有的 `DEEPSEEK_BASE_URL`、`DEEPSEEK_VISION_MODEL` 和 `APIMART_BASE_URL` Variables 可以保留；当前 Worker 直接使用内置默认地址和模型配置。
+`DEEPSEEK_BASE_URL`、`DEEPSEEK_VISION_MODEL` 和 `APIMART_BASE_URL` Variables 可以保留。Worker 工作流会应用已配置的地址和模型变量，未配置的项目使用默认值。
 
 添加以下 **Secrets**。Secrets 只在 GitHub Actions 和 Cloudflare Worker 中使用，不要放入 Variables 或前端代码：
 
@@ -64,7 +66,7 @@ Pages 工作流会在推送到 `main` 时运行；Worker 工作流只在你主�
 | `CLOUDFLARE_API_TOKEN` | Wrangler 部署 Worker 的 Cloudflare API Token |
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare 账户 ID |
 
-只有使用自动部署工作流时才需要 `CLOUDFLARE_API_TOKEN` 和 `CLOUDFLARE_ACCOUNT_ID`。手动部署时不需要把这两个值添加到 GitHub。部署 Worker 后，将 `workers.dev` 地址填入上表的两个代理 Variables，然后重新运行 Pages 工作流，打开网页即可使用。
+只有使用自动部署工作流时才需要 `CLOUDFLARE_API_TOKEN` 和 `CLOUDFLARE_ACCOUNT_ID`。手动部署时不需要把这两个值添加到 GitHub。前端代理 Variables 使用上表的自定义接口地址，修改后重新运行 Pages 工作流；Worker 部署不需要把它们改回 `workers.dev` 地址。
 
 旧的 `SITE_ACCESS_KEY` 已不再使用，现有 Secret 可以保留，无需删除。取消网站访问口令不影响 API 密钥的保存方式：`DEEPSEEK_API_KEY` 和 `APIMART_API_KEY` 仍作为 Worker Secrets 保存，不会发送给浏览器。Worker 的 `/health` 通过 `configured.chat` 和 `configured.image` 标示两项服务密钥是否已配置。
 
@@ -78,7 +80,7 @@ GitHub Pages 是静态托管，GitHub Secrets 和 Variables 不会自动出现�
 
 ## 使用外部 DNS 的自定义子域名
 
-DNS 可以继续由现有服务商管理。静态前端仍部署在 GitHub Pages，接口通过已创建的 Cloudflare Pages 项目 `fozuai-gateway` 转发给原 Worker。已确认网页域名为 `fozu.zoreai.cn`，接口域名为 `fozu-api.zoreai.cn`；以下是目标配置及部署步骤，不代表 DNS、证书和上线验证已完成。
+DNS 由现有服务商管理。网页域名 `fozu.zoreai.cn` 使用 GitHub Pages，接口域名 `fozu-api.zoreai.cn` 通过 Cloudflare Pages 项目 `fozuai-gateway` 转发给 Worker。
 
 ```text
 网页：fozu.zoreai.cn → GitHub Pages

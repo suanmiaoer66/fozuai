@@ -90,6 +90,8 @@ jobs:
       - name: Check Worker health and show frontend configuration
         env:
           WORKER_URL: ${{ steps.worker.outputs.deployment-url }}
+          DEEPSEEK_API_PROXY_URL: ${{ vars.DEEPSEEK_API_PROXY_URL }}
+          IMAGE_API_PROXY_URL: ${{ vars.IMAGE_API_PROXY_URL }}
         run: |
           node --input-type=module <<'NODE'
           import { appendFileSync } from 'node:fs';
@@ -106,5 +108,10 @@ jobs:
             if (attempt < 5) await new Promise((resolve) => setTimeout(resolve, 5000));
           }
           if (!healthy) throw new Error('Worker health check failed or runtime Secrets are missing.');
-          appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Worker deployed: ${root}\n\nHealth check passed; runtime Secrets are configured. This does not call paid model APIs.\n\nSet both GitHub Variables to this URL, then run Deploy to GitHub Pages:\n\n- DEEPSEEK_API_PROXY_URL=${root}\n- IMAGE_API_PROXY_URL=${root}\n`);
+          const chatProxy = process.env.DEEPSEEK_API_PROXY_URL?.trim();
+          const imageProxy = process.env.IMAGE_API_PROXY_URL?.trim();
+          const guidance = chatProxy && imageProxy
+            ? 'Keep the existing frontend API URLs below. Run Deploy to GitHub Pages only if you change these Variables.'
+            : 'Set any missing frontend Variable to your published gateway or custom API URL, then run Deploy to GitHub Pages. Keep any URL already configured below.';
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Worker deployed: ${root}\n\nHealth check passed; runtime Secrets are configured. This does not call paid model APIs.\n\n${guidance}\n\n- DEEPSEEK_API_PROXY_URL=${chatProxy || '(not configured)'}\n- IMAGE_API_PROXY_URL=${imageProxy || '(not configured)'}\n`);
           NODE
