@@ -18,6 +18,12 @@ npm run dev
 
 图片生成接入 APIMart 的 GPT-Image-2：Worker 提交任务到 `/v1/images/generations`，再轮询 `/v1/tasks/{task_id}`，完成后展示返回图片。页面默认使用 `gpt-image-2`、`1:1`、`1k`。
 
+点击输入框的图片生成按钮，可在发送前选择自动、1:1、16:9、9:16、4:3、3:4、3:2、2:3 比例，以及 1K / 2K / 4K 分辨率。设置只影响之后提交的任务，已生成图片保留当时的参数。
+
+生成后点击图片查看大图，支持放大、缩小、适应窗口和打开原图；点击关闭按钮、遮罩或按 Esc 返回聊天。图片卡片和预览内均有“下载图片”按钮，下载失败可重试，手机可从浏览器下载记录保存到相册。
+
+图片下载通过 Worker 的 `GET /v1/tasks/{task_id}/image` 完成，使用任务 ID 查询原图，避免跨站图片无法直接保存。支持 PNG、JPEG、WebP、GIF、AVIF，单文件上限 32 MiB；下载接口不接受任意图片 URL，且不会向图片 CDN 发送 API Key。
+
 ## 线上架构
 
 GitHub Pages 只负责发布静态前端，Cloudflare Worker 负责保存 API Key，并代理 DeepSeek 对话和 APIMart 生图请求。打开网页即可直接使用对话和生图，无需输入网站访问口令：

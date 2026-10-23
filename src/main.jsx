@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { getApiConfig, requestChat, requestImage } from './api.js'
+import ImageCard from './ImageCard.jsx'
 import logoUrl from '../logo.ico'
 import { ArrowLeft } from 'reicon-react/icons/ArrowLeft'
 import { ArrowRight } from 'reicon-react/icons/ArrowRight'
@@ -47,6 +48,8 @@ const promptCards = [
 ]
 
 const apiConfig = getApiConfig(import.meta.env)
+const imageRatios = ['auto', '1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3']
+const imageResolutions = ['1k', '2k', '4k']
 const initialConnection = {
   chat: apiConfig.chatProxyUrl ? 'configured' : 'unconfigured',
   image: apiConfig.imageProxyUrl ? 'configured' : 'unconfigured',
@@ -61,6 +64,8 @@ function App() {
   const [model, setModel] = useState('高级佛祖模型')
   const [attached, setAttached] = useState(false)
   const [generationMode, setGenerationMode] = useState('chat')
+  const [imageSize, setImageSize] = useState(imageRatios.includes(apiConfig.imageSize) ? apiConfig.imageSize : '1:1')
+  const [imageResolution, setImageResolution] = useState(imageResolutions.includes(apiConfig.imageResolution) ? apiConfig.imageResolution : '1k')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [connection, setConnection] = useState(initialConnection)
   const pendingRequest = useRef(null)
@@ -120,6 +125,8 @@ function App() {
     if (!content || pendingRequest.current) return
     followLatest.current = true
     const mode = generationMode
+    const size = imageSize
+    const resolution = imageResolution
     const controller = new AbortController()
     pendingRequest.current = controller
     const timeout = window.setTimeout(() => controller.abort('timeout'), mode === 'image' ? 360000 : 180000)
@@ -130,8 +137,8 @@ function App() {
     try {
       let reply
       if (mode === 'image') {
-        const imageUrl = await requestImage({ config: apiConfig, prompt: content, signal: controller.signal })
-        reply = { role: 'assistant', content: '图片已生成，可以继续调整提示词。', imageUrl, mode }
+        const { imageUrl, taskId } = await requestImage({ config: apiConfig, prompt: content, size, resolution, signal: controller.signal })
+        reply = { role: 'assistant', content: '图片已生成，可以点击查看大图或下载保存。', imageUrl, taskId, imageSize: size, imageResolution: resolution, prompt: content, mode }
       } else {
         const replyContent = await requestChat({
           config: apiConfig,
@@ -251,7 +258,7 @@ function App() {
           ) : (
             <div ref={messageThreadRef} className="message-thread">
               <div className="thread-intro"><span className="mini-mark"><img src={logoUrl} alt="" /></span><span>佛祖 AI · {model}</span></div>
-              {messages.map((message, index) => <div className={`message-block ${message.role}`} key={`${message.role}-${index}`}><div className="message-avatar">{message.role === 'user' ? '林' : <img src={logoUrl} alt="" />}</div><div className="message-body"><div className="message-author">{message.role === 'user' ? '你' : '佛祖 AI'}</div><p>{message.content}</p>{message.imageUrl && <img className="generated-image" src={message.imageUrl} alt="根据提示词生成的图片" />}</div></div>)}
+              {messages.map((message, index) => <div className={`message-block ${message.role} ${message.imageUrl ? 'has-image' : ''}`} key={`${message.role}-${index}`}><div className="message-avatar">{message.role === 'user' ? '林' : <img src={logoUrl} alt="" />}</div><div className="message-body"><div className="message-author">{message.role === 'user' ? '你' : '佛祖 AI'}</div><p>{message.content}</p>{message.imageUrl && <ImageCard message={message} config={apiConfig} />}</div></div>)}
               {isThinking && <div className="message-block assistant"><div className="message-avatar"><img src={logoUrl} alt="" /></div><div className="message-body"><div className="message-author">佛祖 AI</div><div className="thinking"><span /><span /><span /></div></div></div>}
             </div>
           )}
@@ -260,8 +267,9 @@ function App() {
         <div className="composer-wrap">
             <div className="composer-shell">
             {generationMode === 'image' && <div className="composer-mode"><ImageSparkle size={15} /><span>图片生成 · GPT-Image-2</span><button onClick={() => setGenerationMode('chat')}>退出</button></div>}
+            {generationMode === 'image' && <div className="image-options" aria-label="图片生成选项"><label>比例<select value={imageSize} onChange={(event) => setImageSize(event.target.value)} aria-label="图片比例">{imageRatios.map((size) => <option value={size} key={size}>{size === 'auto' ? '自动' : size}</option>)}</select></label><label>分辨率<select value={imageResolution} onChange={(event) => setImageResolution(event.target.value)} aria-label="图片分辨率">{imageResolutions.map((resolution) => <option value={resolution} key={resolution}>{resolution.toUpperCase()}</option>)}</select></label><span className="image-options-hint">选好画幅，描述你的想象</span></div>}
             <textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.nativeEvent.isComposing || event.keyCode === 229) return; if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage() } }} placeholder={generationMode === 'image' ? '描述你想生成的图片' : '问我任何问题，或描述你想完成的事'} rows="1" aria-label="输入消息" />
-            <div className="composer-toolbar"><div className="composer-actions"><button className={`tool-button ${attached ? 'active' : ''}`} onClick={() => setAttached(!attached)} aria-label="添加附件"><Paperclip size={17} /></button><button className="tool-button" aria-label="添加图片"><Image size={17} /></button><button className={`tool-button ${generationMode === 'image' ? 'active' : ''}`} onClick={() => setGenerationMode(generationMode === 'image' ? 'chat' : 'image')} aria-label="图片生成"><ImageSparkle size={17} /></button><button className="tool-button" aria-label="语音输入"><Mic size={17} /></button>{attached && <span className="attachment-hint">已准备添加附件</span>}</div><div className="composer-right">{generationMode === 'chat' && <div className="model-select-wrap"><button className="model-select" onClick={() => setModelOpen(!modelOpen)}><span className={`model-dot status-${connection.chat}`} />{model}<ChevronDown size={14} /></button>{modelOpen && <div className="model-menu"><button className={model === '高级佛祖模型' ? 'selected' : ''} onClick={() => { setModel('高级佛祖模型'); setModelOpen(false) }}>高级佛祖模型<small>深度思考</small></button><button className={model === '导管佛祖模型' ? 'selected' : ''} onClick={() => { setModel('导管佛祖模型'); setModelOpen(false) }}>导管佛祖模型<small>快速对话</small></button></div>}</div>}{generationMode === 'image' && <span className="image-settings">{import.meta.env.VITE_APIMART_IMAGE_SIZE || '1:1'} · {(import.meta.env.VITE_APIMART_IMAGE_RESOLUTION || '1k').toUpperCase()}</span>}<button className={`send-button ${input.trim() && !isThinking ? 'ready' : ''}`} disabled={!input.trim() || isThinking} onClick={() => sendMessage()} aria-label={generationMode === 'image' ? '生成图片' : '发送'}><Send size={17} weight="Outline" /></button></div></div>
+            <div className="composer-toolbar"><div className="composer-actions"><button className={`tool-button ${attached ? 'active' : ''}`} onClick={() => setAttached(!attached)} aria-label="添加附件"><Paperclip size={17} /></button><button className="tool-button" aria-label="添加图片"><Image size={17} /></button><button className={`tool-button ${generationMode === 'image' ? 'active' : ''}`} onClick={() => setGenerationMode(generationMode === 'image' ? 'chat' : 'image')} aria-label="图片生成"><ImageSparkle size={17} /></button><button className="tool-button" aria-label="语音输入"><Mic size={17} /></button>{attached && <span className="attachment-hint">已准备添加附件</span>}</div><div className="composer-right">{generationMode === 'chat' && <div className="model-select-wrap"><button className="model-select" onClick={() => setModelOpen(!modelOpen)}><span className={`model-dot status-${connection.chat}`} />{model}<ChevronDown size={14} /></button>{modelOpen && <div className="model-menu"><button className={model === '高级佛祖模型' ? 'selected' : ''} onClick={() => { setModel('高级佛祖模型'); setModelOpen(false) }}>高级佛祖模型<small>深度思考</small></button><button className={model === '导管佛祖模型' ? 'selected' : ''} onClick={() => { setModel('导管佛祖模型'); setModelOpen(false) }}>导管佛祖模型<small>快速对话</small></button></div>}</div>}<button className={`send-button ${input.trim() && !isThinking ? 'ready' : ''}`} disabled={!input.trim() || isThinking} onClick={() => sendMessage()} aria-label={generationMode === 'image' ? '生成图片' : '发送'}><Send size={17} weight="Outline" /></button></div></div>
           </div>
           <p className="composer-note">{statusLabels[currentStatus]} · 佛祖 AI 可能会犯错，请核对重要信息</p>
         </div>

@@ -1,6 +1,11 @@
 const DEFAULT_ORIGIN = 'https://suanmiaoer66.github.io'
 const MAX_REQUEST_BYTES = 128 * 1024
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+const MAX_IMAGE_BYTES = 32 * 1024 * 1024
+const IMAGE_DOWNLOAD_TYPES = new Map([
+  ['image/png', 'png'], ['image/jpeg', 'jpg'], ['image/webp', 'webp'],
+  ['image/gif', 'gif'], ['image/avif', 'avif'],
+])
 const TASK_ID = /^[A-Za-z0-9_-]{1,128}$/
 const CHAT_MODELS = {
   '高级佛祖模型': 'deepseek-reasoner',
@@ -236,6 +241,122 @@ function taskResult(data, taskId, env) {
   return { code: 200, data: result }
 }
 
+function imageSignatureMatches(bytes, type) {
+  const matches = (offset, value) => bytes.length >= offset + value.length && value.every((byte, index) => bytes[offset + index] === byte)
+  const ascii = (offset, text) => matches(offset, Array.from(text, (character) => character.charCodeAt(0)))
+  if (type === 'image/png') return matches(0, [137, 80, 78, 71, 13, 10, 26, 10])
+  if (type === 'image/jpeg') return matches(0, [255, 216, 255])
+  if (type === 'image/gif') return ascii(0, 'GIF87a') || ascii(0, 'GIF89a')
+  if (type === 'image/webp') return ascii(0, 'RIFF') && ascii(8, 'WEBP')
+  if (type === 'image/avif' && bytes.length >= 16 && ascii(4, 'ftyp')) {
+    const boxLength = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0)
+    if (boxLength < 16) return false
+    if (ascii(8, 'avif') || ascii(8, 'avis')) return true
+    for (let offset = 16; offset + 4 <= Math.min(boxLength, bytes.length); offset += 4) {
+      if (ascii(offset, 'avif') || ascii(offset, 'avis')) return true
+    }
+  }
+  return false
+}
+
+async function downloadTaskImage(image, taskId, headers, fetchImpl, timeoutMs) {
+  const controller = new AbortController()
+  let response
+  let reader
+  let complete = false
+  let cancellation = Promise.resolve()
+  const timer = setTimeout(() => {
+    controller.abort()
+    // Cancel a stalled body as well as the initial fetch; await cleanup below.
+    if (reader) cancellation = reader.cancel().catch(() => {})
+  }, Math.min(timeoutMs, 30000))
+  try {
+    // Construct fresh headers. Never forward API credentials, cookies or caller headers to the CDN.
+    response = await fetchImpl(image, {
+      method: 'GET',
+      headers: { Accept: [...IMAGE_DOWNLOAD_TYPES.keys()].join(', ') },
+      credentials: 'omit',
+      redirect: 'manual',
+      signal: controller.signal,
+    })
+    if (response.status >= 300 && response.status < 400) throw new HttpError(502, 'image_redirect_denied', '图片下载地址发生跳转，暂时无法下载，请稍后重试。')
+    if (response.status !== 200 || !response.body) throw new HttpError(502, 'image_download_failed', '图片文件暂时无法下载，链接可能已过期，请稍后重试。')
+    const type = response.headers.get('Content-Type')?.split(';')[0].trim().toLowerCase()
+    if (!IMAGE_DOWNLOAD_TYPES.has(type)) throw new HttpError(502, 'invalid_image_type', '图片服务返回了不支持的文件格式，无法下载。')
+    const length = response.headers.get('Content-Length')
+    if (length !== null && (!/^\d+$/.test(length) || !Number.isSafeInteger(Number(length)))) throw new HttpError(502, 'invalid_image_file', '图片文件长度无效，请稍后重试。')
+    if (length !== null && Number(length) > MAX_IMAGE_BYTES) throw new HttpError(413, 'image_too_large', '图片超过 32 MiB 下载上限，请选择较低分辨率重新生成。')
+
+    // Validate the entire bounded input before sending headers so oversized/failed
+    // downloads still return a readable JSON error, including without Content-Length.
+    // Keep chunks for the response stream instead of allocating a second full buffer.
+    reader = response.body.getReader()
+    const chunks = []
+    const prefix = new Uint8Array(256)
+    let size = 0
+    let prefixSize = 0
+    let block = new Uint8Array(64 * 1024)
+    let blockSize = 0
+    while (true) {
+      const { done, value } = await reader.read()
+      if (controller.signal.aborted) throw new HttpError(504, 'image_download_timeout', '图片下载超时，请稍后重试。')
+      if (done) break
+      size += value.byteLength
+      if (size > MAX_IMAGE_BYTES) throw new HttpError(413, 'image_too_large', '图片超过 32 MiB 下载上限，请选择较低分辨率重新生成。')
+      if (!value.byteLength) continue
+      const prefixChunk = value.subarray(0, prefix.length - prefixSize)
+      prefix.set(prefixChunk, prefixSize)
+      prefixSize += prefixChunk.byteLength
+      // Coalesce tiny network chunks so their bookkeeping is bounded too.
+      for (let offset = 0; offset < value.byteLength;) {
+        const count = Math.min(block.length - blockSize, value.byteLength - offset)
+        block.set(value.subarray(offset, offset + count), blockSize)
+        offset += count
+        blockSize += count
+        if (blockSize === block.length) {
+          chunks.push(block)
+          block = new Uint8Array(64 * 1024)
+          blockSize = 0
+        }
+      }
+    }
+    if (!size || (length !== null && size !== Number(length)) || !imageSignatureMatches(prefix.subarray(0, prefixSize), type)) throw new HttpError(502, 'invalid_image_file', '图片文件内容无效或下载不完整，请稍后重试。')
+    if (blockSize) chunks.push(block.subarray(0, blockSize))
+    complete = true
+    const downloadHeaders = new Headers(headers)
+    downloadHeaders.set('Content-Type', type)
+    downloadHeaders.set('Content-Length', String(size))
+    downloadHeaders.set('Content-Disposition', `attachment; filename="fozuai-${taskId}.${IMAGE_DOWNLOAD_TYPES.get(type)}"`)
+    downloadHeaders.set('Access-Control-Expose-Headers', 'Content-Disposition, Content-Type, Content-Length')
+    let index = 0
+    const body = new ReadableStream({
+      pull(stream) {
+        if (index === chunks.length) {
+          stream.close()
+          return
+        }
+        stream.enqueue(chunks[index])
+        chunks[index++] = null
+      },
+      cancel() { chunks.length = 0 },
+    })
+    return new Response(body, { headers: downloadHeaders })
+  } catch (error) {
+    if (controller.signal.aborted) throw new HttpError(504, 'image_download_timeout', '图片下载超时，请稍后重试。')
+    if (error instanceof HttpError) throw error
+    throw new HttpError(502, 'image_download_failed', '图片文件暂时无法下载，请稍后重试。')
+  } finally {
+    clearTimeout(timer)
+    await cancellation
+    if (reader) {
+      if (!complete) await reader.cancel().catch(() => {})
+      reader.releaseLock()
+    } else if (response?.body) {
+      await response.body.cancel().catch(() => {})
+    }
+  }
+}
+
 export async function handleRequest(request, env, fetchImpl = fetch, timeoutMs = 90000) {
   const headers = responseHeaders(request, env)
   const json = (data, status = 200) => new Response(JSON.stringify(data), { status, headers })
@@ -245,7 +366,7 @@ export async function handleRequest(request, env, fetchImpl = fetch, timeoutMs =
     const url = new URL(request.url)
     const isChat = ['/chat/completions', '/v1/chat/completions'].includes(url.pathname)
     const isImage = url.pathname === '/v1/images/generations'
-    const taskMatch = /^\/v1\/tasks\/([A-Za-z0-9_-]{1,128})$/.exec(url.pathname)
+    const taskMatch = /^\/v1\/tasks\/([A-Za-z0-9_-]{1,128})(\/image)?$/.exec(url.pathname)
     const isHealth = url.pathname === '/health'
     if (!isChat && !isImage && !taskMatch && !isHealth) throw new HttpError(404, 'not_found', '接口不存在。')
     if (url.search) invalid('请求地址不能包含查询参数。')
@@ -277,7 +398,12 @@ export async function handleRequest(request, env, fetchImpl = fetch, timeoutMs =
       const payload = imagePayload(await requestBody(request), env)
       return json(imageSubmission(await upstreamRequest(`${root}/images/generations`, 'POST', payload, env.APIMART_API_KEY, fetchImpl, timeoutMs), env))
     }
-    return json(taskResult(await upstreamRequest(`${root}/tasks/${taskMatch[1]}`, 'GET', null, env.APIMART_API_KEY, fetchImpl, timeoutMs), taskMatch[1], env))
+    const task = taskResult(await upstreamRequest(`${root}/tasks/${taskMatch[1]}`, 'GET', null, env.APIMART_API_KEY, fetchImpl, timeoutMs), taskMatch[1], env)
+    if (taskMatch[2]) {
+      if (task.data.status !== 'completed') throw new HttpError(409, 'image_not_ready', task.data.error?.message || '图片尚未生成完成，请等待完成后再下载。')
+      return await downloadTaskImage(task.data.result.images[0].url[0], taskMatch[1], headers, fetchImpl, timeoutMs)
+    }
+    return json(task)
   } catch (error) {
     if (error instanceof HttpError) return json({ error: { code: error.code, message: error.message } }, error.status)
     return json({ error: { code: 'internal_error', message: '服务暂时不可用，请稍后重试。' } }, 500)

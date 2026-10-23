@@ -191,3 +191,165 @@ test('upstream timeout maps to 504 and versioned base does not duplicate /v1', a
   assert.equal(response.status, 504)
   assert.equal(upstreamUrl, 'https://api.deepseek.com/v1/chat/completions')
 })
+
+const pngBytes = new Uint8Array(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jJ1sAAAAASUVORK5CYII=', 'base64'))
+const completedTask = (image = 'https://upload.apimart.ai/output.png?signature=public-download') => jsonResponse({ data: { status: 'completed', result: { images: [{ url: [image] }] } } })
+
+test('image download returns an attachment and never forwards credentials to the CDN', async () => {
+  const calls = []
+  const downloadRequest = request('/v1/tasks/task_download/image', { method: 'GET', key: 'caller-site-key' })
+  downloadRequest.headers.set('Authorization', 'Bearer caller-token')
+  downloadRequest.headers.set('Cookie', 'session=caller-cookie')
+  const response = await handleRequest(downloadRequest, env, async (url, options) => {
+    calls.push({ url, options })
+    if (calls.length === 1) return completedTask()
+    return new Response(pngBytes, { headers: { 'Content-Type': 'image/png; charset=binary', 'Content-Length': String(pngBytes.length), 'Set-Cookie': 'secret=cdn-cookie', Authorization: 'cdn-secret' } })
+  })
+  assert.equal(response.status, 200)
+  assert.equal(calls[0].url, 'https://api.apimart.ai/v1/tasks/task_download')
+  assert.equal(calls[0].options.headers.Authorization, `Bearer ${env.APIMART_API_KEY}`)
+  assert.equal(calls[1].url, 'https://upload.apimart.ai/output.png?signature=public-download')
+  assert.deepEqual(Object.keys(calls[1].options.headers), ['Accept'])
+  assert.equal(calls[1].options.credentials, 'omit')
+  assert.equal(calls[1].options.redirect, 'manual')
+  assert.doesNotMatch(JSON.stringify(calls[1].options), /apimart-secret|deepseek-secret|caller-/)
+  assert.equal(response.headers.get('Content-Type'), 'image/png')
+  assert.equal(response.headers.get('Content-Disposition'), 'attachment; filename="fozuai-task_download.png"')
+  assert.equal(response.headers.get('Content-Length'), String(pngBytes.length))
+  assert.equal(response.headers.get('Access-Control-Allow-Origin'), env.ALLOWED_ORIGIN)
+  assert.match(response.headers.get('Access-Control-Expose-Headers'), /Content-Disposition, Content-Type/)
+  assert.equal(response.headers.get('X-Content-Type-Options'), 'nosniff')
+  assert.equal(response.headers.get('Set-Cookie'), null)
+  assert.equal(response.headers.get('Authorization'), null)
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), pngBytes)
+})
+
+test('image download accepts supported formats without Content-Length and chooses safe filenames', async () => {
+  const fixtures = [
+    ['image/png', 'png', pngBytes],
+    ['image/jpeg', 'jpg', new Uint8Array([255, 216, 255, 224, 0, 0])],
+    ['image/gif', 'gif', new TextEncoder().encode('GIF89a')],
+    ['image/webp', 'webp', new TextEncoder().encode('RIFF0000WEBP')],
+    ['image/avif', 'avif', new Uint8Array([0, 0, 0, 24, ...new TextEncoder().encode('ftypavif'), 0, 0, 0, 0, ...new TextEncoder().encode('avifmif1')])],
+  ]
+  for (const [type, extension, bytes] of fixtures) {
+    let calls = 0
+    const response = await handleRequest(request('/v1/tasks/task_formats/image', { method: 'GET' }), env, async () => {
+      if (++calls === 1) return completedTask()
+      let index = 0
+      return new Response(new ReadableStream({
+        pull(controller) {
+          if (index === bytes.length) return controller.close()
+          controller.enqueue(bytes.subarray(index, ++index))
+        },
+      }), { headers: { 'Content-Type': type } })
+    })
+    assert.equal(response.status, 200, type)
+    assert.equal(response.headers.get('Content-Type'), type)
+    assert.equal(response.headers.get('Content-Disposition'), `attachment; filename="fozuai-task_formats.${extension}"`)
+    assert.deepEqual(new Uint8Array(await response.arrayBuffer()), bytes)
+  }
+})
+
+test('image download waits for completed tasks and rejects arbitrary URL query parameters', async () => {
+  for (const status of ['submitted', 'pending', 'processing', 'failed', 'cancelled']) {
+    let calls = 0
+    const response = await handleRequest(request('/v1/tasks/task_pending/image', { method: 'GET' }), env, async () => {
+      calls += 1
+      return jsonResponse({ data: { status } })
+    })
+    assert.equal(response.status, 409)
+    assert.equal((await read(response)).error.code, 'image_not_ready')
+    assert.equal(calls, 1)
+  }
+  let calls = 0
+  const arbitrary = await handleRequest(request('/v1/tasks/task_download/image?url=https://attacker.example/file.png', { method: 'GET' }), env, async () => { calls++; return completedTask() })
+  assert.equal(arbitrary.status, 400)
+  assert.equal(calls, 0)
+})
+
+test('image download rejects unsafe or credential-bearing task URLs before fetching the CDN', async () => {
+  for (const image of ['http://upload.apimart.ai/file.png', 'https://127.0.0.1/file.png', 'https://localhost/file.png', 'https://user:password@cdn.example/file.png', 'https://cdn.example/apimart-secret.png']) {
+    let calls = 0
+    const response = await handleRequest(request('/v1/tasks/task_unsafe/image', { method: 'GET' }), env, async () => { calls++; return completedTask(image) })
+    assert.equal(response.status, 502)
+    assert.doesNotMatch(await response.text(), /apimart-secret|password|127\.0\.0\.1/)
+    assert.equal(calls, 1)
+  }
+})
+
+test('image download refuses CDN redirects, failures, HTML, SVG and forged image MIME types', async () => {
+  for (const makeResponse of [
+    () => new Response('apimart-secret', { status: 302, headers: { Location: 'https://attacker.example/?key=apimart-secret' } }),
+    () => new Response('apimart-secret', { status: 404 }),
+    () => new Response('<html>apimart-secret</html>', { headers: { 'Content-Type': 'text/html' } }),
+    () => new Response('<svg>apimart-secret</svg>', { headers: { 'Content-Type': 'image/svg+xml' } }),
+    () => new Response('<html>apimart-secret</html>', { headers: { 'Content-Type': 'image/png' } }),
+    () => new Response(pngBytes, { headers: { 'Content-Type': 'image/jpeg' } }),
+    () => new Response(pngBytes, { headers: { 'Content-Type': 'application/octet-stream' } }),
+  ]) {
+    let calls = 0
+    const response = await handleRequest(request('/v1/tasks/task_badcdn/image', { method: 'GET' }), env, async (_url, options) => {
+      if (++calls === 1) return completedTask()
+      assert.equal(options.redirect, 'manual')
+      return makeResponse()
+    })
+    assert.equal(response.status, 502)
+    assert.equal(calls, 2)
+    assert.equal(response.headers.get('Content-Type'), 'application/json; charset=utf-8')
+    assert.equal(response.headers.get('Access-Control-Allow-Origin'), env.ALLOWED_ORIGIN)
+    assert.doesNotMatch(await response.text(), /apimart-secret|attacker\.example/)
+  }
+})
+
+test('image download enforces the 32 MiB limit for declared and unknown body sizes', async () => {
+  for (const declaredLength of [String(32 * 1024 * 1024 + 1), null, '1']) {
+    let calls = 0
+    let cancelled = false
+    let emitted = 0
+    const chunk = new Uint8Array(1024 * 1024)
+    chunk.set(pngBytes)
+    const response = await handleRequest(request('/v1/tasks/task_large/image', { method: 'GET' }), env, async () => {
+      if (++calls === 1) return completedTask()
+      return new Response(new ReadableStream({
+        pull(controller) {
+          emitted++
+          controller.enqueue(chunk)
+        },
+        cancel() { cancelled = true },
+      }), { headers: { 'Content-Type': 'image/png', ...(declaredLength === null ? {} : { 'Content-Length': declaredLength }) } })
+    })
+    assert.equal(response.status, 413)
+    assert.equal((await read(response)).error.code, 'image_too_large')
+    assert.equal(cancelled, true)
+    assert.ok(emitted <= 34, 'must stop the stream shortly after the limit')
+  }
+})
+
+test('image download detects truncated files and body failures without leaking upstream errors', async () => {
+  for (const makeResponse of [
+    () => new Response(pngBytes, { headers: { 'Content-Type': 'image/png', 'Content-Length': String(pngBytes.length + 1) } }),
+    () => new Response(new Uint8Array(), { headers: { 'Content-Type': 'image/png' } }),
+    () => new Response(new ReadableStream({ start(controller) { controller.error(new Error('apimart-secret')) } }), { headers: { 'Content-Type': 'image/png' } }),
+  ]) {
+    let calls = 0
+    const response = await handleRequest(request('/v1/tasks/task_incomplete/image', { method: 'GET' }), env, async () => ++calls === 1 ? completedTask() : makeResponse())
+    assert.equal(response.status, 502)
+    assert.doesNotMatch(await response.text(), /apimart-secret/)
+  }
+})
+
+test('image download timeout covers both response headers and a stalled body', async () => {
+  for (const stalledBody of [false, true]) {
+    let calls = 0
+    let cancelled = false
+    const response = await handleRequest(request('/v1/tasks/task_timeout/image', { method: 'GET' }), env, async (_url, options) => {
+      if (++calls === 1) return completedTask()
+      if (!stalledBody) return new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true }))
+      return new Response(new ReadableStream({ cancel() { cancelled = true } }), { headers: { 'Content-Type': 'image/png' } })
+    }, 5)
+    assert.equal(response.status, 504)
+    assert.equal((await read(response)).error.code, 'image_download_timeout')
+    if (stalledBody) assert.equal(cancelled, true)
+  }
+})

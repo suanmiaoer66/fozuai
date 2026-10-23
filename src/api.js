@@ -74,14 +74,14 @@ function delay(ms, signal) {
   })
 }
 
-export async function requestImage({ config, prompt, signal, fetchImpl = fetch, pollInterval = 2500, maxAttempts = 120 }) {
+export async function requestImage({ config, prompt, size = config.imageSize, resolution = config.imageResolution, signal, fetchImpl = fetch, pollInterval = 2500, maxAttempts = 120 }) {
   if (!config.imageProxyUrl) throw new ApiError('图片服务尚未配置，请联系网站管理员连接图片服务。', 'not_configured')
   const apiRoot = config.imageProxyUrl.endsWith('/v1') ? config.imageProxyUrl : `${config.imageProxyUrl}/v1`
   const submitData = await requestJson(`${apiRoot}/images/generations`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     signal,
-    body: JSON.stringify({ model: config.imageModel, prompt, n: 1, size: config.imageSize, resolution: config.imageResolution }),
+    body: JSON.stringify({ model: config.imageModel, prompt, n: 1, size, resolution }),
   }, fetchImpl)
   const taskId = submitData?.data?.[0]?.task_id
   if (typeof taskId !== 'string' || !taskId) throw new ApiError('图片任务未能创建，请重试或联系网站管理员检查图片服务。', 'invalid_response')
@@ -96,10 +96,45 @@ export async function requestImage({ config, prompt, signal, fetchImpl = fetch, 
       const urls = task?.result?.images?.[0]?.url
       const imageUrl = Array.isArray(urls) ? urls[0] : urls
       if (typeof imageUrl !== 'string' || !/^https?:\/\//i.test(imageUrl)) throw new ApiError('图片任务已完成，但未返回有效图片地址。', 'invalid_response')
-      return imageUrl
+      return { imageUrl, taskId }
     }
     if (task?.status === 'failed' || task?.status === 'cancelled') throw new ApiError('图片生成未成功，请调整描述后重试；若持续失败，请联系网站管理员检查服务状态。', 'generation_failed')
     if (!['pending', 'processing', 'queued', 'running', 'submitted'].includes(task?.status)) throw new ApiError('无法获取图片任务状态，请联系网站管理员检查图片服务。', 'invalid_response')
   }
   throw new ApiError('图片仍在生成，等待时间已超过五分钟。请稍后查询任务，避免重复提交。', 'timeout')
+}
+
+export async function downloadImage({ config, taskId, signal, fetchImpl = fetch }) {
+  if (!config.imageProxyUrl) throw new ApiError('图片服务尚未配置，请联系网站管理员连接图片服务。', 'not_configured')
+  if (typeof taskId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(taskId)) {
+    throw new ApiError('图片任务编号无效，请重新生成图片。', 'invalid_request')
+  }
+  const apiRoot = config.imageProxyUrl.endsWith('/v1') ? config.imageProxyUrl : `${config.imageProxyUrl}/v1`
+  let response
+  try {
+    response = await fetchImpl(`${apiRoot}/tasks/${encodeURIComponent(taskId)}/image`, { signal })
+  } catch (error) {
+    if (error.name === 'AbortError' || signal?.aborted) throw error
+    throw new ApiError('无法连接图片服务，请稍后重试。', 'network_error')
+  }
+  if (!response.ok) {
+    if (response.status === 409) throw new ApiError('图片仍在生成，请稍后再下载。', 'image_not_ready', response.status)
+    if (response.status === 404) throw new ApiError('图片任务不存在或已过期，请重新生成。', 'not_found', response.status)
+    if (response.status === 413) throw new ApiError('图片文件过大，暂时无法下载。', 'file_too_large', response.status)
+    if (response.status >= 500) throw new ApiError('图片服务暂时不可用，请稍后重试。', 'service_error', response.status)
+    throw new ApiError(`图片下载未成功（${response.status}），请稍后重试。`, 'download_failed', response.status)
+  }
+  let blob
+  try {
+    blob = await response.blob()
+  } catch (error) {
+    if (error.name === 'AbortError' || signal?.aborted) throw error
+    throw new ApiError('图片下载中断，请稍后重试。', 'download_failed')
+  }
+  const extension = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'image/avif': 'avif' }[blob.type]
+  if (!blob.size || !extension) throw new ApiError('下载内容不是有效图片，请联系网站管理员检查服务。', 'invalid_response')
+  const disposition = response.headers.get('Content-Disposition') || ''
+  const suppliedName = disposition.match(/filename="?([^";]+)"?/i)?.[1]
+  const filename = suppliedName && /^[A-Za-z0-9_-]+\.(png|jpe?g|webp|gif|avif)$/i.test(suppliedName) ? suppliedName : `fozuai-${taskId}.${extension}`
+  return { blob, filename }
 }

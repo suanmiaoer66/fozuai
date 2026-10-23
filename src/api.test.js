@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { getApiConfig, requestChat, requestImage } from './api.js'
+import { getApiConfig, requestChat, requestImage, downloadImage } from './api.js'
 
 const config = getApiConfig({ VITE_DEEPSEEK_API_PROXY_URL: 'https://proxy.example/v1/', VITE_IMAGE_API_PROXY_URL: 'https://proxy.example/v1/' })
 const json = (data, status = 200) => new Response(JSON.stringify(data), { status })
@@ -49,7 +49,43 @@ test('image generation keeps an existing /v1 and submits and polls without crede
     return json(responses.shift())
   } })
   assert.deepEqual(urls, ['https://proxy.example/v1/images/generations', 'https://proxy.example/v1/tasks/image-task', 'https://proxy.example/v1/tasks/image-task'])
-  assert.equal(imageUrl, 'https://images.example/result.png')
+  assert.deepEqual(imageUrl, { imageUrl: 'https://images.example/result.png', taskId: 'image-task' })
+})
+
+test('image download returns a safe blob filename without browser credentials', async () => {
+  const result = await downloadImage({ config, taskId: 'image-task', fetchImpl: async (url, options) => {
+    assert.equal(url, 'https://proxy.example/v1/tasks/image-task/image')
+    assert.equal(options.headers, undefined)
+    return new Response(new Blob(['png-bytes'], { type: 'image/png' }), { headers: { 'Content-Disposition': 'attachment; filename="fozuai-image.png"' } })
+  } })
+  assert.equal(result.filename, 'fozuai-image.png')
+  assert.equal(result.blob.type, 'image/png')
+  assert.equal(await result.blob.text(), 'png-bytes')
+})
+
+test('image download explains unfinished tasks and rejects non-image responses', async () => {
+  await assert.rejects(downloadImage({ config, taskId: 'image-task', fetchImpl: async () => new Response('', { status: 409 }) }), { code: 'image_not_ready', status: 409 })
+  await assert.rejects(downloadImage({ config, taskId: 'image-task', fetchImpl: async () => new Response('<html>bad</html>', { headers: { 'Content-Type': 'text/html' } }) }), { code: 'invalid_response' })
+})
+
+test('image request sends selected ratio and resolution instead of build defaults', async () => {
+  let submitted
+  const result = await requestImage({ config, prompt: '海报', size: '9:16', resolution: '2k', pollInterval: 0, fetchImpl: async (_url, options) => {
+    if (options.method === 'POST') {
+      submitted = JSON.parse(options.body)
+      return json({ data: [{ task_id: 'portrait-task' }] })
+    }
+    return json({ data: { status: 'completed', result: { images: [{ url: 'https://images.example/portrait.webp' }] } } })
+  } })
+  assert.equal(submitted.size, '9:16')
+  assert.equal(submitted.resolution, '2k')
+  assert.deepEqual(result, { imageUrl: 'https://images.example/portrait.webp', taskId: 'portrait-task' })
+})
+
+test('image download never accepts arbitrary URLs and chooses a matching fallback extension', async () => {
+  await assert.rejects(downloadImage({ config, taskId: 'https://attacker.example/image', fetchImpl: () => assert.fail('must not request') }), { code: 'invalid_request' })
+  const { filename } = await downloadImage({ config, taskId: 'image-task', fetchImpl: async () => new Response('webp-bytes', { headers: { 'Content-Type': 'image/webp', 'Content-Disposition': 'attachment; filename="../../unsafe.html"' } }) })
+  assert.equal(filename, 'fozuai-image-task.webp')
 })
 
 test('polling errors are checked instead of being hidden until a timeout', async () => {
