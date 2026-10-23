@@ -17,12 +17,6 @@ export function getApiConfig(env = {}) {
   }
 }
 
-function requestHeaders(accessKey, json = false) {
-  const headers = json ? { 'Content-Type': 'application/json' } : {}
-  if (accessKey?.trim()) headers['X-Fozu-Access-Key'] = accessKey.trim()
-  return headers
-}
-
 async function requestJson(url, options, fetchImpl) {
   let response
   try {
@@ -34,7 +28,7 @@ async function requestJson(url, options, fetchImpl) {
 
   if (!response.ok) {
     if (response.status === 401 || response.status === 403) {
-      throw new ApiError('访问口令缺失或不正确，请在左下角设置中填写网站访问口令后重试。', 'unauthorized', response.status)
+      throw new ApiError('服务暂时无法访问，请稍后重试；若持续失败，请联系网站管理员检查服务权限。', 'unauthorized', response.status)
     }
     if (response.status === 429) throw new ApiError('请求过于频繁或服务额度不足，请稍后重试。', 'rate_limited', response.status)
     if (response.status === 404) throw new ApiError('服务地址无法使用，请联系网站管理员检查接口配置。', 'not_found', response.status)
@@ -50,11 +44,11 @@ async function requestJson(url, options, fetchImpl) {
   }
 }
 
-export async function requestChat({ config, messages, model, accessKey, signal, fetchImpl = fetch }) {
+export async function requestChat({ config, messages, model, signal, fetchImpl = fetch }) {
   if (!config.chatProxyUrl) throw new ApiError('对话服务尚未配置，请联系网站管理员连接对话服务。', 'not_configured')
   const data = await requestJson(`${config.chatProxyUrl}/chat/completions`, {
     method: 'POST',
-    headers: requestHeaders(accessKey, true),
+    headers: { 'Content-Type': 'application/json' },
     signal,
     body: JSON.stringify({ model, messages, stream: false }),
   }, fetchImpl)
@@ -80,12 +74,12 @@ function delay(ms, signal) {
   })
 }
 
-export async function requestImage({ config, prompt, accessKey, signal, fetchImpl = fetch, pollInterval = 2500, maxAttempts = 120 }) {
+export async function requestImage({ config, prompt, signal, fetchImpl = fetch, pollInterval = 2500, maxAttempts = 120 }) {
   if (!config.imageProxyUrl) throw new ApiError('图片服务尚未配置，请联系网站管理员连接图片服务。', 'not_configured')
   const apiRoot = config.imageProxyUrl.endsWith('/v1') ? config.imageProxyUrl : `${config.imageProxyUrl}/v1`
   const submitData = await requestJson(`${apiRoot}/images/generations`, {
     method: 'POST',
-    headers: requestHeaders(accessKey, true),
+    headers: { 'Content-Type': 'application/json' },
     signal,
     body: JSON.stringify({ model: config.imageModel, prompt, n: 1, size: config.imageSize, resolution: config.imageResolution }),
   }, fetchImpl)
@@ -95,7 +89,6 @@ export async function requestImage({ config, prompt, accessKey, signal, fetchImp
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     await delay(pollInterval, signal)
     const taskData = await requestJson(`${apiRoot}/tasks/${encodeURIComponent(taskId)}`, {
-      headers: requestHeaders(accessKey),
       signal,
     }, fetchImpl)
     const task = taskData?.data

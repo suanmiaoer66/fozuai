@@ -20,7 +20,7 @@ npm run dev
 
 ## 线上架构
 
-GitHub Pages 只负责发布静态前端，Cloudflare Worker 负责保存 API Key、校验网站访问口令，并代理 DeepSeek 对话和 APIMart 生图请求：
+GitHub Pages 只负责发布静态前端，Cloudflare Worker 负责保存 API Key，并代理 DeepSeek 对话和 APIMart 生图请求。打开网页即可直接使用对话和生图，无需输入网站访问口令：
 
 ```text
 浏览器 → GitHub Pages → Cloudflare Worker → DeepSeek / APIMart
@@ -33,7 +33,7 @@ GitHub Pages 只负责发布静态前端，Cloudflare Worker 负责保存 API Ke
 
 Pages 工作流会在推送到 `main` 时运行；Worker 工作流只在你主动选择 `workflow_dispatch` 时运行。
 
-如果不想配置 Cloudflare 部署 Token，最简单的方式是直接在 Cloudflare 控制台手动创建 Worker：新建一个 Worker，复制 [worker/index.js](worker/index.js) 的代码，部署后在 Worker 的 **Settings → Variables and Secrets** 中添加三个 Secrets：`DEEPSEEK_API_KEY`、`APIMART_API_KEY`、`SITE_ACCESS_KEY`。代码里的 DeepSeek、APIMart 地址和图片默认参数已经写好，不需要再配置。复制 Worker 的 `workers.dev` 地址，填入下面两个 GitHub Variables，然后重新运行 Pages 工作流即可。
+如果不想配置 Cloudflare 部署 Token，最简单的方式是直接在 Cloudflare 控制台手动创建 Worker：新建一个 Worker，复制 [worker/index.js](worker/index.js) 的代码，部署后在 Worker 的 **Settings → Variables and Secrets** 中添加两个 Secrets：`DEEPSEEK_API_KEY`、`APIMART_API_KEY`。代码里的 DeepSeek、APIMart 地址和图片默认参数已经写好，不需要再配置。复制 Worker 的 `workers.dev` 地址，填入下面两个 GitHub Variables，然后重新运行 Pages 工作流即可。
 
 ## GitHub 配置
 
@@ -57,9 +57,10 @@ Pages 工作流会在推送到 `main` 时运行；Worker 工作流只在你主�
 | `APIMART_API_KEY` | APIMart 生图服务密钥 |
 | `CLOUDFLARE_API_TOKEN` | Wrangler 部署 Worker 的 Cloudflare API Token |
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare 账户 ID |
-| `SITE_ACCESS_KEY` | 页面访问口令，建议使用至少 32 位随机字符串 |
 
-只有使用自动部署工作流时才需要 `CLOUDFLARE_API_TOKEN` 和 `CLOUDFLARE_ACCOUNT_ID`。手动部署时不需要把这两个值添加到 GitHub。部署 Worker 后，将 `workers.dev` 地址填入上表的两个代理 Variables，然后重新运行 Pages 工作流。打开网页后，在左下角“服务设置”中输入同一个 `SITE_ACCESS_KEY`；访问口令只保存在当前浏览器页面内存。
+只有使用自动部署工作流时才需要 `CLOUDFLARE_API_TOKEN` 和 `CLOUDFLARE_ACCOUNT_ID`。手动部署时不需要把这两个值添加到 GitHub。部署 Worker 后，将 `workers.dev` 地址填入上表的两个代理 Variables，然后重新运行 Pages 工作流，打开网页即可使用。
+
+旧的 `SITE_ACCESS_KEY` 已不再使用，现有 Secret 可以保留，无需删除。取消网站访问口令不影响 API 密钥的保存方式：`DEEPSEEK_API_KEY` 和 `APIMART_API_KEY` 仍作为 Worker Secrets 保存，不会发送给浏览器。Worker 的 `/health` 通过 `configured.chat` 和 `configured.image` 标示两项服务密钥是否已配置。
 
 GitHub Pages 是静态托管，GitHub Secrets 和 Variables 不会自动出现在浏览器运行时。API Key 不应直接写入公开构建产物；如果只配置了 API Key 而没有部署 Worker，线上对话和生图不会工作。
 

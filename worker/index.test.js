@@ -4,7 +4,6 @@ import { handleRequest } from './index.js'
 
 const env = {
   ALLOWED_ORIGIN: 'https://suanmiaoer66.github.io',
-  SITE_ACCESS_KEY: 'test-site-key',
   DEEPSEEK_API_KEY: 'deepseek-secret',
   APIMART_API_KEY: 'apimart-secret',
   DEEPSEEK_BASE_URL: 'https://api.deepseek.com',
@@ -17,8 +16,9 @@ const env = {
   APIMART_IMAGE_RESOLUTION: '1k',
 }
 
-function request(path, { method = 'POST', body, key = 'test-site-key', origin = env.ALLOWED_ORIGIN, contentType = 'application/json' } = {}) {
-  const headers = { Origin: origin, 'X-Fozu-Access-Key': key }
+function request(path, { method = 'POST', body, key, origin = env.ALLOWED_ORIGIN, contentType = 'application/json' } = {}) {
+  const headers = { Origin: origin }
+  if (key) headers['X-Fozu-Access-Key'] = key
   if (contentType) headers['Content-Type'] = contentType
   return new Request(`https://fozuai-api.example${path}`, {
     method,
@@ -64,12 +64,17 @@ test('fast and legacy model mappings use configured IDs safely', async () => {
   assert.equal(unsafe.status, 400)
 })
 
-test('wrong or missing shared key is rejected before upstream call', async () => {
+test('chat needs no site password even when a legacy secret remains deployed', async () => {
   let calls = 0
-  const response = await handleRequest(request('/chat/completions', { key: 'wrong', body: { model: '导管佛祖模型', messages: [{ role: 'user', content: 'hi' }] } }), env, async () => { calls += 1; return jsonResponse({}) })
-  assert.equal(response.status, 401)
-  assert.equal(calls, 0)
-  assert.equal((await read(response)).error.code, 'unauthorized')
+  for (const key of [undefined, 'outdated-password']) {
+    const response = await handleRequest(request('/chat/completions', { key, body: { model: '导管佛祖模型', messages: [{ role: 'user', content: 'hi' }] } }), { ...env, SITE_ACCESS_KEY: 'old-site-secret' }, async () => {
+      calls += 1
+      return jsonResponse({ choices: [{ message: { content: '可以直接使用。' } }] })
+    })
+    assert.equal(response.status, 200)
+    assert.equal((await read(response)).choices[0].message.content, '可以直接使用。')
+  }
+  assert.equal(calls, 2)
 })
 
 test('CORS preflight allows only the frontend origin and required headers', async () => {
@@ -78,19 +83,19 @@ test('CORS preflight allows only the frontend origin and required headers', asyn
     headers: {
       Origin: env.ALLOWED_ORIGIN,
       'Access-Control-Request-Method': 'POST',
-      'Access-Control-Request-Headers': 'content-type, x-fozu-access-key',
+      'Access-Control-Request-Headers': 'content-type',
     },
   })
   const response = await handleRequest(preflight, env)
   assert.equal(response.status, 204)
   assert.equal(response.headers.get('Access-Control-Allow-Origin'), env.ALLOWED_ORIGIN)
-  assert.match(response.headers.get('Access-Control-Allow-Headers'), /X-Fozu-Access-Key/)
+  assert.match(response.headers.get('Access-Control-Allow-Headers'), /Content-Type/)
 
   const denied = await handleRequest(request('/chat/completions', { origin: 'https://evil.example', body: { model: 'deepseek-chat', messages: [{ role: 'user', content: 'hi' }] } }), env)
   assert.equal(denied.status, 403)
 })
 
-test('image submission and task result are reduced to safe fields', async () => {
+test('image submission and polling need no password and return only safe fields', async () => {
   const calls = []
   const submit = await handleRequest(request('/v1/images/generations', { body: { model: 'gpt-image-2', prompt: '一朵莲花', size: '16:9', resolution: '2k', official_fallback: true } }), env, async (url, options) => {
     calls.push({ url, options })
@@ -126,23 +131,25 @@ test('bad upstream hosts, redirects, oversized input, and invalid image URLs fai
 })
 
 test('health reports configuration state without secrets', async () => {
-  const response = await handleRequest(request('/health', { method: 'GET', key: '' }), env)
+  const response = await handleRequest(request('/health', { method: 'GET' }), env)
   assert.equal(response.status, 200)
-  assert.deepEqual(await read(response), { status: 'ok', configured: { chat: true, image: true, access: true } })
+  assert.deepEqual(await read(response), { status: 'ok', configured: { chat: true, image: true } })
 })
 
 test('missing server configuration fails closed with CORS on errors', async () => {
   let calls = 0
   const fetchImpl = async () => { calls += 1; return jsonResponse({}) }
   const body = { model: 'deepseek-chat', messages: [{ role: 'user', content: 'hi' }] }
-  for (const missing of ['SITE_ACCESS_KEY', 'DEEPSEEK_API_KEY']) {
-    const response = await handleRequest(request('/chat/completions', { body }), { ...env, [missing]: '' }, fetchImpl)
+  for (const [path, options, missing] of [
+    ['/chat/completions', { body }, 'DEEPSEEK_API_KEY'],
+    ['/v1/images/generations', { body: { prompt: '莲花' } }, 'APIMART_API_KEY'],
+    ['/v1/tasks/task_any', { method: 'GET' }, 'APIMART_API_KEY'],
+  ]) {
+    const response = await handleRequest(request(path, options), { ...env, [missing]: '' }, fetchImpl)
     assert.equal(response.status, 503)
     assert.equal(response.headers.get('Access-Control-Allow-Origin'), env.ALLOWED_ORIGIN)
     assert.equal(response.headers.get('Cache-Control'), 'no-store')
   }
-  const taskWithoutKey = await handleRequest(request('/v1/tasks/task_any', { method: 'GET', key: '' }), env, fetchImpl)
-  assert.equal(taskWithoutKey.status, 401)
   assert.equal(calls, 0)
 })
 
@@ -169,7 +176,8 @@ test('upstream failures do not leak credentials and successful text redacts secr
     assert.equal(response.status, [402, 429].includes(status) ? 429 : 502)
     assert.doesNotMatch(await response.text(), /deepseek-secret/)
   }
-  const response = await handleRequest(request('/chat/completions', { body }), env, async () => jsonResponse({ choices: [{ message: { content: `echo: ${env.DEEPSEEK_API_KEY} ${env.APIMART_API_KEY} ${env.SITE_ACCESS_KEY}` } }] }))
+  const legacyEnv = { ...env, SITE_ACCESS_KEY: 'old-site-secret' }
+  const response = await handleRequest(request('/chat/completions', { body }), legacyEnv, async () => jsonResponse({ choices: [{ message: { content: `echo: ${env.DEEPSEEK_API_KEY} ${env.APIMART_API_KEY} ${legacyEnv.SITE_ACCESS_KEY}` } }] }))
   assert.equal(response.status, 200)
   assert.equal((await read(response)).choices[0].message.content, 'echo: [已隐藏] [已隐藏] [已隐藏]')
 })

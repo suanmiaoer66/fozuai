@@ -61,7 +61,6 @@ button:focus-visible, textarea:focus-visible { outline: 3px solid rgba(12, 157, 
 .online-dot, .model-dot { width: 7px; height: 7px; border-radius: 50%; background: #3ab49d; box-shadow: 0 0 0 3px rgba(58,180,157,.12); display: inline-block; flex: 0 0 auto; }
 .usage-copy { font-size: 11px; color: #8b979a; margin: 8px 0 10px; }
 .account-row { width: 100%; display: flex; align-items: center; gap: 9px; height: 45px; padding: 0 10px; border-radius: 11px; background: transparent; text-align: left; color: #80909a; }
-.account-row:hover { background: #f5f7f8; }
 .avatar, .user-avatar { display: grid; place-items: center; border-radius: 50%; background: #d8eee9; color: #2b7166; }
 .avatar { width: 30px; height: 30px; font-size: 12px; font-weight: 700; }
 .account-copy { display: grid; gap: 2px; flex: 1; }
@@ -144,21 +143,8 @@ button:focus-visible, textarea:focus-visible { outline: 3px solid rgba(12, 157, 
 .send-button { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 9px; background: #e6eeed; color: #a2afb0; transition: background .2s, color .2s, transform .2s; }
 .send-button.ready { color: white; background: var(--accent); box-shadow: 0 5px 13px rgba(12, 157, 134, .18); }
 .composer-note { margin: 9px 0 0; color: #a8b1b5; font-size: 10px; text-align: center; }
-.composer-note button { color: #8d9c9e; background: transparent; text-decoration: underline; text-underline-offset: 2px; }
 .generated-image { display: block; width: min(100%, 520px); margin-top: 10px; border: 1px solid #dbe8e5; border-radius: 14px; box-shadow: 0 12px 32px rgba(25,57,72,.08); }
 .message-block.error .message-body p { color: #9a514b; border-color: #f0d9d4; background: #fff8f6; }
-.message-action { margin-top: 9px; padding: 7px 10px; color: var(--accent-deep); background: var(--accent-wash); border-radius: 8px; font-size: 11px; }
-.settings-backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 18px; background: rgba(24, 40, 47, .24); backdrop-filter: blur(4px); }
-.settings-dialog { width: min(410px, 100%); padding: 22px; background: white; border: 1px solid #e0e9e9; border-radius: 18px; box-shadow: 0 24px 70px rgba(25,57,72,.2); }
-.settings-heading { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
-.settings-heading h2 { margin: 0; color: #25353c; font-size: 18px; }
-.settings-heading p, .settings-help { color: #89979c; font-size: 11px; line-height: 1.7; }
-.settings-label { display: grid; gap: 8px; margin-top: 21px; color: #52646c; font-size: 12px; font-weight: 650; }
-.settings-label input { width: 100%; height: 40px; padding: 0 11px; border: 1px solid #dfe8e9; border-radius: 9px; color: #40545b; background: #fbfcfc; font-size: 13px; }
-.settings-label input:focus { outline: 3px solid rgba(12,157,134,.15); border-color: #a8d9d0; }
-.settings-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
-.settings-cancel, .settings-save { padding: 9px 13px; border-radius: 9px; font-size: 12px; }
-.settings-cancel { color: #718087; background: #f1f4f4; }.settings-save { color: white; background: var(--accent); }
 @media (max-width: 860px) { .app-shell { grid-template-columns: 1fr; }.sidebar { position: fixed; inset: 0 auto 0 0; width: 274px; transform: translateX(-102%); transition: transform .23s ease; box-shadow: 14px 0 38px rgba(25,57,72,.11); }.sidebar.is-open { transform: translateX(0); }.sidebar-close, .mobile-menu { display: grid !important; }.sidebar-close { margin-left: auto; }.desktop-arrow, .crumb-divider { display: none !important; }.topbar { padding: 0 18px; }.topbar-left { gap: 9px; }.conversation { padding-left: 18px; padding-right: 18px; }.composer-wrap { width: calc(100% - 30px); padding-bottom: max(16px, env(safe-area-inset-bottom)); }.prompt-grid { grid-template-columns: repeat(2, 1fr); }.welcome-panel { margin-top: 16px; }.model-pill { display: none; } }
 @media (max-width: 520px) { .topbar { height: 58px; }.welcome-panel h1 { font-size: 29px; }.welcome-copy { font-size: 13px; margin-bottom: 21px; }.prompt-grid { gap: 8px; }.prompt-card { min-height: 100px; padding: 12px; }.prompt-text small { max-width: 100px; }.composer-shell { border-radius: 15px; }.message-block { max-width: 96%; }.mode-switch { margin-bottom: 22px; } }
 

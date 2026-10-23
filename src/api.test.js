@@ -6,7 +6,7 @@ const config = getApiConfig({ VITE_DEEPSEEK_API_PROXY_URL: 'https://proxy.exampl
 const json = (data, status = 200) => new Response(JSON.stringify(data), { status })
 const chatRequest = { config, model: '导管佛祖模型', messages: [{ role: 'user', content: '你好' }] }
 
-test('chat calls a configured proxy without any browser API key', async () => {
+test('chat calls a configured proxy without an access code or browser API key', async () => {
   const reply = await requestChat({ ...chatRequest, fetchImpl: async (url, options) => {
     assert.equal(url, 'https://proxy.example/v1/chat/completions')
     assert.deepEqual(options.headers, { 'Content-Type': 'application/json' })
@@ -16,12 +16,16 @@ test('chat calls a configured proxy without any browser API key', async () => {
   assert.equal(reply, '真实回复')
 })
 
-test('runtime access code is sent only as the site header', async () => {
-  await requestChat({ ...chatRequest, accessKey: ' session-code ', fetchImpl: async (_url, options) => {
-    assert.equal(options.headers['X-Fozu-Access-Key'], 'session-code')
-    assert.equal(options.headers.Authorization, undefined)
-    return json({ choices: [{ message: { content: 'ok' } }] })
-  } })
+test('access failures explain service permissions without asking for an access code', async () => {
+  for (const status of [401, 403]) {
+    await assert.rejects(requestChat({ ...chatRequest, fetchImpl: async () => json({}, status) }), (error) => {
+      assert.equal(error.code, 'unauthorized')
+      assert.equal(error.status, status)
+      assert.match(error.message, /检查服务权限/)
+      assert.doesNotMatch(error.message, /口令|密码|填写|设置/)
+      return true
+    })
+  }
 })
 
 test('missing proxy reports a configuration error without making a request', async () => {
@@ -36,13 +40,12 @@ test('HTTP failures and empty replies never turn into successful assistant repli
   await assert.rejects(requestChat({ ...chatRequest, fetchImpl: async () => new Response('<html>error</html>') }), { code: 'invalid_response' })
 })
 
-test('image generation keeps an existing /v1 and authenticates submission and polling', async () => {
+test('image generation keeps an existing /v1 and submits and polls without credentials', async () => {
   const urls = []
   const responses = [{ data: [{ task_id: 'image-task' }] }, { data: { status: 'processing' } }, { data: { status: 'completed', result: { images: [{ url: ['https://images.example/result.png'] }] } } }]
-  const imageUrl = await requestImage({ config, prompt: '一朵花', accessKey: 'session-code', pollInterval: 0, fetchImpl: async (url, options) => {
+  const imageUrl = await requestImage({ config, prompt: '一朵花', pollInterval: 0, fetchImpl: async (url, options) => {
     urls.push(url)
-    assert.equal(options.headers['X-Fozu-Access-Key'], 'session-code')
-    assert.equal(options.headers.Authorization, undefined)
+    assert.deepEqual(options.headers || {}, urls.length === 1 ? { 'Content-Type': 'application/json' } : {})
     return json(responses.shift())
   } })
   assert.deepEqual(urls, ['https://proxy.example/v1/images/generations', 'https://proxy.example/v1/tasks/image-task', 'https://proxy.example/v1/tasks/image-task'])

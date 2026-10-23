@@ -35,17 +35,12 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           APIMART_API_KEY: ${{ secrets.APIMART_API_KEY }}
-          SITE_ACCESS_KEY: ${{ secrets.SITE_ACCESS_KEY }}
         run: |
           node --input-type=module <<'NODE'
-          const names = ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'DEEPSEEK_API_KEY', 'APIMART_API_KEY', 'SITE_ACCESS_KEY'];
+          const names = ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'DEEPSEEK_API_KEY', 'APIMART_API_KEY'];
           const missing = names.filter((name) => !process.env[name]?.trim());
           if (missing.length) {
             console.error(`Missing GitHub Actions Secrets: ${missing.join(', ')}`);
-            process.exit(1);
-          }
-          if (!/^[\x21-\x7e]{32,512}$/.test(process.env.SITE_ACCESS_KEY)) {
-            console.error('SITE_ACCESS_KEY must contain 32–512 ASCII characters without spaces.');
             process.exit(1);
           }
           NODE
@@ -80,11 +75,9 @@ jobs:
           secrets: |
             DEEPSEEK_API_KEY
             APIMART_API_KEY
-            SITE_ACCESS_KEY
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           APIMART_API_KEY: ${{ secrets.APIMART_API_KEY }}
-          SITE_ACCESS_KEY: ${{ secrets.SITE_ACCESS_KEY }}
 
       - name: Check Worker health and show frontend configuration
         env:
@@ -99,7 +92,7 @@ jobs:
             try {
               const response = await fetch(`${root}/health`, { signal: AbortSignal.timeout(10000) });
               const data = await response.json();
-              healthy = response.ok && data.status === 'ok' && ['chat', 'image', 'access'].every((key) => data.configured?.[key]);
+              healthy = response.ok && data.status === 'ok' && ['chat', 'image'].every((key) => data.configured?.[key]);
               if (healthy) break;
             } catch {}
             if (attempt < 5) await new Promise((resolve) => setTimeout(resolve, 5000));

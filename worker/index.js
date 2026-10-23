@@ -44,28 +44,6 @@ function responseHeaders(request, env) {
   return headers
 }
 
-async function authorize(request, env) {
-  const expectedSecret = typeof env.SITE_ACCESS_KEY === 'string' ? env.SITE_ACCESS_KEY.trim() : ''
-  if (!configuredSecret(expectedSecret)) {
-    throw new HttpError(503, 'not_configured', '网站访问口令尚未配置，请联系网站管理员。')
-  }
-  const supplied = (request.headers.get('X-Fozu-Access-Key') || '').trim()
-  if (!supplied || supplied.length > 512 || expectedSecret.length > 512) {
-    throw new HttpError(401, 'unauthorized', '请填写正确的网站访问口令。')
-  }
-  // Compare fixed-length digests so matching prefixes do not change comparison work.
-  const encoder = new TextEncoder()
-  const [expected, actual] = await Promise.all([
-    crypto.subtle.digest('SHA-256', encoder.encode(expectedSecret)),
-    crypto.subtle.digest('SHA-256', encoder.encode(supplied)),
-  ])
-  const expectedBytes = new Uint8Array(expected)
-  const actualBytes = new Uint8Array(actual)
-  let difference = 0
-  for (let index = 0; index < expectedBytes.length; index += 1) difference |= expectedBytes[index] ^ actualBytes[index]
-  if (difference !== 0) throw new HttpError(401, 'unauthorized', '请填写正确的网站访问口令。')
-}
-
 async function readJson(body, maxBytes, upstream = false) {
   const fail = () => {
     throw new HttpError(upstream ? 502 : 400, upstream ? 'invalid_upstream_response' : 'invalid_json', upstream ? '模型服务返回了无法识别的内容。' : '请求必须是有效的 JSON。')
@@ -175,6 +153,8 @@ function upstreamRoot(configured, origin) {
 }
 
 function secretValues(env) {
+  // Keep redacting a legacy site secret if it remains in the deployment.
+  // It no longer controls access to the public assistant.
   const siteAccessKey = typeof env.SITE_ACCESS_KEY === 'string' ? env.SITE_ACCESS_KEY.trim() : env.SITE_ACCESS_KEY
   return [env.DEEPSEEK_API_KEY, env.APIMART_API_KEY, siteAccessKey].filter(configuredSecret)
 }
@@ -277,6 +257,7 @@ export async function handleRequest(request, env, fetchImpl = fetch, timeoutMs =
         throw new HttpError(403, 'preflight_denied', '请求方式或请求头不受支持。')
       }
       headers.set('Access-Control-Allow-Methods', `${method}, OPTIONS`)
+      // Accept the unused legacy header while cached frontends update.
       headers.set('Access-Control-Allow-Headers', 'Content-Type, X-Fozu-Access-Key')
       headers.set('Access-Control-Max-Age', '600')
       return new Response(null, { status: 204, headers })
@@ -285,8 +266,7 @@ export async function handleRequest(request, env, fetchImpl = fetch, timeoutMs =
       headers.set('Allow', `${method}, OPTIONS`)
       throw new HttpError(405, 'method_not_allowed', '请求方式不受支持。')
     }
-    if (isHealth) return json({ status: 'ok', configured: { chat: configuredSecret(env.DEEPSEEK_API_KEY), image: configuredSecret(env.APIMART_API_KEY), access: configuredSecret(env.SITE_ACCESS_KEY) } })
-    await authorize(request, env)
+    if (isHealth) return json({ status: 'ok', configured: { chat: configuredSecret(env.DEEPSEEK_API_KEY), image: configuredSecret(env.APIMART_API_KEY) } })
     if (isChat) {
       const payload = chatPayload(await requestBody(request), env)
       const root = upstreamRoot(env.DEEPSEEK_BASE_URL, 'https://api.deepseek.com')

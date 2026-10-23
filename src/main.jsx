@@ -21,7 +21,6 @@ import { Paperclip } from 'reicon-react/icons/Paperclip'
 import { Plus } from 'reicon-react/icons/Plus'
 import { Search3 } from 'reicon-react/icons/Search3'
 import { Send } from 'reicon-react/icons/Send'
-import { Settings } from 'reicon-react/icons/Settings'
 import './styles.css'
 
 const iconProps = { size: 18, weight: 'Outline', strokeWidth: 1.8 }
@@ -64,11 +63,7 @@ function App() {
   const [generationMode, setGenerationMode] = useState('chat')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [connection, setConnection] = useState(initialConnection)
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const [accessKey, setAccessKey] = useState('')
-  const [accessKeyDraft, setAccessKeyDraft] = useState('')
   const pendingRequest = useRef(null)
-  const settingsDialog = useRef(null)
   const conversationRef = useRef(null)
   const messageThreadRef = useRef(null)
   const followLatest = useRef(true)
@@ -104,48 +99,6 @@ function App() {
     followLatest.current = conversation.scrollHeight - conversation.scrollTop - conversation.clientHeight < 80
   }
 
-  useEffect(() => {
-    if (!settingsOpen) return
-    const previousFocus = document.activeElement
-    const dialog = settingsDialog.current
-    dialog.querySelector('input')?.focus()
-    const onKeyDown = (event) => {
-      if (event.key === 'Escape') setSettingsOpen(false)
-      if (event.key !== 'Tab') return
-      const focusable = [...dialog.querySelectorAll('button, input')]
-      const first = focusable[0]
-      const last = focusable.at(-1)
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault()
-        last.focus()
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault()
-        first.focus()
-      }
-    }
-    document.addEventListener('keydown', onKeyDown)
-    return () => {
-      document.removeEventListener('keydown', onKeyDown)
-      previousFocus?.focus()
-    }
-  }, [settingsOpen])
-
-  const saveSettings = (event) => {
-    event.preventDefault()
-    setAccessKey(accessKeyDraft.trim())
-    setAccessKeyDraft('')
-    setConnection((current) => ({
-      chat: current.chat === 'loading' ? 'loading' : initialConnection.chat,
-      image: current.image === 'loading' ? 'loading' : initialConnection.image,
-    }))
-    setSettingsOpen(false)
-  }
-
-  const openSettings = () => {
-    setAccessKeyDraft(accessKey)
-    setSettingsOpen(true)
-  }
-
   const statusLabels = {
     unconfigured: '服务尚未配置',
     configured: '服务已配置 · 待验证',
@@ -177,12 +130,11 @@ function App() {
     try {
       let reply
       if (mode === 'image') {
-        const imageUrl = await requestImage({ config: apiConfig, prompt: content, accessKey, signal: controller.signal })
+        const imageUrl = await requestImage({ config: apiConfig, prompt: content, signal: controller.signal })
         reply = { role: 'assistant', content: '图片已生成，可以继续调整提示词。', imageUrl, mode }
       } else {
         const replyContent = await requestChat({
           config: apiConfig,
-          accessKey,
           signal: controller.signal,
           model,
           messages: [
@@ -202,7 +154,7 @@ function App() {
       const message = controller.signal.reason === 'timeout'
         ? (mode === 'image' ? '图片生成等待超时，服务端任务可能仍在进行，请稍后再试。' : '回复等待超时，请稍后重试，或切换到导管佛祖模型。')
         : error.message
-      setMessages((current) => [...current, { role: 'error', content: message, mode, needsAccessKey: error.code === 'unauthorized' }])
+      setMessages((current) => [...current, { role: 'error', content: message, mode }])
       setConnection((current) => ({ ...current, [mode]: error.code === 'not_configured' ? 'unconfigured' : 'error' }))
     } finally {
       window.clearTimeout(timeout)
@@ -274,7 +226,7 @@ function App() {
             <div className="usage-copy">对话：{statusLabels[connection.chat]}</div>
             <div className="usage-copy">图片：{statusLabels[connection.image]}</div>
           </div>
-          <button className="account-row" onClick={openSettings} aria-label="打开服务设置"><span className="avatar">林</span><span className="account-copy"><b>林默</b><small>个人空间</small></span><Settings size={17} /></button>
+          <div className="account-row"><span className="avatar">林</span><span className="account-copy"><b>林默</b><small>个人空间</small></span></div>
         </div>
       </aside>
 
@@ -299,7 +251,7 @@ function App() {
           ) : (
             <div ref={messageThreadRef} className="message-thread">
               <div className="thread-intro"><span className="mini-mark"><img src={logoUrl} alt="" /></span><span>佛祖 AI · {model}</span></div>
-              {messages.map((message, index) => <div className={`message-block ${message.role}`} key={`${message.role}-${index}`}><div className="message-avatar">{message.role === 'user' ? '林' : <img src={logoUrl} alt="" />}</div><div className="message-body"><div className="message-author">{message.role === 'user' ? '你' : '佛祖 AI'}</div><p>{message.content}</p>{message.imageUrl && <img className="generated-image" src={message.imageUrl} alt="根据提示词生成的图片" />}{message.needsAccessKey && <button className="message-action" onClick={openSettings}>打开设置填写访问口令</button>}</div></div>)}
+              {messages.map((message, index) => <div className={`message-block ${message.role}`} key={`${message.role}-${index}`}><div className="message-avatar">{message.role === 'user' ? '林' : <img src={logoUrl} alt="" />}</div><div className="message-body"><div className="message-author">{message.role === 'user' ? '你' : '佛祖 AI'}</div><p>{message.content}</p>{message.imageUrl && <img className="generated-image" src={message.imageUrl} alt="根据提示词生成的图片" />}</div></div>)}
               {isThinking && <div className="message-block assistant"><div className="message-avatar"><img src={logoUrl} alt="" /></div><div className="message-body"><div className="message-author">佛祖 AI</div><div className="thinking"><span /><span /><span /></div></div></div>}
             </div>
           )}
@@ -311,10 +263,9 @@ function App() {
             <textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.nativeEvent.isComposing || event.keyCode === 229) return; if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage() } }} placeholder={generationMode === 'image' ? '描述你想生成的图片' : '问我任何问题，或描述你想完成的事'} rows="1" aria-label="输入消息" />
             <div className="composer-toolbar"><div className="composer-actions"><button className={`tool-button ${attached ? 'active' : ''}`} onClick={() => setAttached(!attached)} aria-label="添加附件"><Paperclip size={17} /></button><button className="tool-button" aria-label="添加图片"><Image size={17} /></button><button className={`tool-button ${generationMode === 'image' ? 'active' : ''}`} onClick={() => setGenerationMode(generationMode === 'image' ? 'chat' : 'image')} aria-label="图片生成"><ImageSparkle size={17} /></button><button className="tool-button" aria-label="语音输入"><Mic size={17} /></button>{attached && <span className="attachment-hint">已准备添加附件</span>}</div><div className="composer-right">{generationMode === 'chat' && <div className="model-select-wrap"><button className="model-select" onClick={() => setModelOpen(!modelOpen)}><span className={`model-dot status-${connection.chat}`} />{model}<ChevronDown size={14} /></button>{modelOpen && <div className="model-menu"><button className={model === '高级佛祖模型' ? 'selected' : ''} onClick={() => { setModel('高级佛祖模型'); setModelOpen(false) }}>高级佛祖模型<small>深度思考</small></button><button className={model === '导管佛祖模型' ? 'selected' : ''} onClick={() => { setModel('导管佛祖模型'); setModelOpen(false) }}>导管佛祖模型<small>快速对话</small></button></div>}</div>}{generationMode === 'image' && <span className="image-settings">{import.meta.env.VITE_APIMART_IMAGE_SIZE || '1:1'} · {(import.meta.env.VITE_APIMART_IMAGE_RESOLUTION || '1k').toUpperCase()}</span>}<button className={`send-button ${input.trim() && !isThinking ? 'ready' : ''}`} disabled={!input.trim() || isThinking} onClick={() => sendMessage()} aria-label={generationMode === 'image' ? '生成图片' : '发送'}><Send size={17} weight="Outline" /></button></div></div>
           </div>
-          <p className="composer-note">{statusLabels[currentStatus]} · 佛祖 AI 可能会犯错，请核对重要信息 · <button onClick={openSettings}>服务设置</button></p>
+          <p className="composer-note">{statusLabels[currentStatus]} · 佛祖 AI 可能会犯错，请核对重要信息</p>
         </div>
       </main>
-      {settingsOpen && <div className="settings-backdrop" role="presentation" onClick={() => setSettingsOpen(false)}><form ref={settingsDialog} className="settings-dialog" role="dialog" onSubmit={saveSettings} aria-modal="true" aria-labelledby="settings-title" onClick={(event) => event.stopPropagation()}><div className="settings-heading"><div><h2 id="settings-title">服务设置</h2><p>访问口令只保存在当前浏览器页面内。</p></div><button type="button" className="icon-button" onClick={() => setSettingsOpen(false)} aria-label="关闭设置">×</button></div><label className="settings-label">网站访问口令<input type="password" value={accessKeyDraft} onChange={(event) => setAccessKeyDraft(event.target.value)} placeholder="填写网站管理员提供的访问口令" autoComplete="off" /></label><p className="settings-help">对话服务：{statusLabels[connection.chat]}<br />图片服务：{statusLabels[connection.image]}</p><div className="settings-actions"><button type="button" className="settings-cancel" onClick={() => setSettingsOpen(false)}>取消</button><button type="submit" className="settings-save">保存到本次会话</button></div></form></div>}
     </div>
   )
 }
