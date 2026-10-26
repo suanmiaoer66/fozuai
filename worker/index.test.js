@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { handleRequest } from './index.js'
+import { MAX_CHAT_IMAGES, MAX_CHAT_IMAGE_DATA_URL_BYTES, MAX_CHAT_REQUEST_BYTES } from '../shared/chat.js'
 
 const env = {
   ALLOWED_ORIGIN: 'https://suanmiaoer66.github.io',
@@ -228,7 +229,7 @@ test('invalid models, oversized bodies and image parameter errors never reach up
     const response = await handleRequest(request('/chat/completions', { body: { model, messages: [{ role: 'user', content: 'hi' }] } }), env, fetchImpl)
     assert.equal(response.status, 400)
   }
-  const tooLarge = await handleRequest(request('/chat/completions', { body: { ignored: 'x'.repeat(130 * 1024) } }), env, fetchImpl)
+  const tooLarge = await handleRequest(request('/v1/images/generations', { body: { prompt: '莲花', ignored: 'x'.repeat(130 * 1024) } }), env, fetchImpl)
   assert.equal(tooLarge.status, 413)
   for (const options of [{ n: 2 }, { n: '1' }, { resolution: '8k' }, { size: '9999x9999' }, { model: 'anything-else' }]) {
     const response = await handleRequest(request('/v1/images/generations', { body: { prompt: '莲花', ...options } }), env, fetchImpl)
@@ -423,6 +424,196 @@ test('image download timeout covers both response headers and a stalled body', a
 })
 
 const referencePng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6ZQAAAABJRU5ErkJggg==', 'base64')
+const chatPngUrl = `data:image/png;base64,${referencePng.toString('base64')}`
+const chatImage = (url = chatPngUrl) => ({ type: 'image_url', image_url: { url } })
+const chatText = (text = '图片里有什么？') => ({ type: 'text', text })
+const visionMessages = (url = chatPngUrl) => [{ role: 'user', content: [chatText(), chatImage(url)] }]
+
+test('vision chat forwards only validated inline content and retains images in follow-up context', async () => {
+  const messages = [
+    { role: 'system', content: '用中文简短回答。', name: 'ignored-system-name' },
+    { role: 'user', content: [
+      { ...chatText('图片是什么形状和颜色？'), metadata: 'ignored-text-extra' },
+      { ...chatImage(), image_url: { url: chatPngUrl, detail: 'high', filename: 'private-name.png' }, extra: 'ignored-image-extra' },
+    ], extra: 'ignored-message-extra' },
+    { role: 'assistant', content: '这是一个圆形。' },
+    { role: 'user', content: '它的背景是什么颜色？' },
+  ]
+  for (const path of ['/chat/completions', '/v1/chat/completions']) {
+    let calls = 0
+    const response = await handleRequest(request(path, { body: { model: '导管佛祖模型', messages, tools: [{ type: 'function' }] } }), env, async (url, options) => {
+      calls++
+      assert.equal(url, 'https://api.deepseek.com/v1/chat/completions')
+      assert.equal(options.headers.Authorization, 'Bearer deepseek-secret')
+      assert.deepEqual(JSON.parse(options.body), {
+        model: 'deepseek-flash', stream: false, max_tokens: 8192, thinking: { type: 'disabled' },
+        messages: [
+          { role: 'system', content: '用中文简短回答。' },
+          { role: 'user', content: [chatText('图片是什么形状和颜色？'), { type: 'image_url', image_url: { url: chatPngUrl, detail: 'auto' } }] },
+          { role: 'assistant', content: '这是一个圆形。' },
+          { role: 'user', content: '它的背景是什么颜色？' },
+        ],
+      })
+      return jsonResponse({ choices: [{ message: { content: '背景为浅色。' } }] })
+    })
+    assert.equal(response.status, 200)
+    assert.equal(calls, 1, 'inline vision must call DeepSeek directly, without an image upload')
+    assert.equal((await read(response)).choices[0].message.content, '背景为浅色。')
+  }
+})
+
+test('advanced Flash vision preserves thinking settings and accepts PNG, JPEG and WebP signatures', async () => {
+  const jpegUrl = `data:image/jpeg;base64,${Buffer.from([255, 216, 255, 224, 0, 0]).toString('base64')}`
+  const webpUrl = `data:image/webp;base64,${Buffer.from('RIFF0000WEBP').toString('base64')}`
+  const response = await handleRequest(request('/chat/completions', {
+    body: { model: '高级佛祖模型', messages: [{ role: 'user', content: [chatText('比较三张图片。'), ...[chatPngUrl, jpegUrl, webpUrl].map(chatImage)] }] },
+  }), { ...env, DEEPSEEK_REASONING_MODEL: 'deepseek-flash' }, async (_url, options) => {
+    const payload = JSON.parse(options.body)
+    assert.equal(payload.model, 'deepseek-flash')
+    assert.equal(payload.max_tokens, 16384)
+    assert.deepEqual(payload.thinking, { type: 'enabled' })
+    assert.equal(payload.reasoning_effort, 'high')
+    assert.deepEqual(payload.messages[0].content.slice(1).map((part) => part.image_url), [chatPngUrl, jpegUrl, webpUrl].map((url) => ({ url, detail: 'auto' })))
+    return jsonResponse({ choices: [{ message: { content: '三张图片已收到。' } }] })
+  })
+  assert.equal(response.status, 200)
+})
+
+test('a user can submit an image without a text block', async () => {
+  const response = await handleRequest(request('/chat/completions', {
+    body: { model: '导管佛祖模型', messages: [{ role: 'user', content: [chatImage()] }] },
+  }), env, async (_url, options) => {
+    assert.deepEqual(JSON.parse(options.body).messages, [{ role: 'user', content: [{ type: 'image_url', image_url: { url: chatPngUrl, detail: 'auto' } }] }])
+    return jsonResponse({ choices: [{ message: { content: '这是一张图片。' } }] })
+  })
+  assert.equal(response.status, 200)
+})
+
+test('vision rejects unsupported configured models instead of dropping picture context', async () => {
+  for (const [model, config] of [
+    ['高级佛祖模型', env],
+    ['导管佛祖模型', { ...env, DEEPSEEK_CHAT_MODEL: 'deepseek-chat' }],
+    ['deepseek-v4-pro', env],
+    ['deepseek-reasoner', env],
+  ]) {
+    const response = await handleRequest(request('/chat/completions', { body: { model, messages: visionMessages() } }), config, () => assert.fail('unsupported vision must not call upstream'))
+    assert.equal(response.status, 400, model)
+    assert.equal((await read(response)).error.code, 'vision_model_unsupported', model)
+  }
+})
+
+test('vision rejects unsupported roles, content blocks and malformed inline image data before upstream', async () => {
+  const invalidMessages = [
+    [{ role: 'assistant', content: [chatText(), chatImage()] }, { role: 'user', content: '继续' }],
+    [{ role: 'system', content: [chatText(), chatImage()] }, { role: 'user', content: '继续' }],
+    [{ role: 'tool', content: [chatText(), chatImage()] }],
+    [{ role: 'user', content: [] }],
+    [{ role: 'user', content: [chatText('  '), chatImage()] }],
+    [{ role: 'user', content: [chatText(), null] }],
+    [{ role: 'user', content: [chatText(), { type: 'file', file: { file_id: 'file_123' } }] }],
+    [{ role: 'user', content: [chatText(), { type: 'image_url', image_url: chatPngUrl }] }],
+    [{ role: 'user', content: [chatText(), { type: 'image_url', image_url: {} }] }],
+    [{ role: 'user', content: [chatText(), { type: 'text', text: 123 }, chatImage()] }],
+    [{ role: 'user', content: [...Array.from({ length: 4 }, () => chatText()), chatImage()] }],
+    ...[
+      'https://upload.apimart.ai/reference.png',
+      'http://127.0.0.1/reference.png',
+      'file:///private/reference.png',
+      'data:image/svg+xml;base64,PHN2ZyAvPg==',
+      'data:image/gif;base64,R0lGODlh',
+      'data:image/png;base64,',
+      'data:image/png;base64,!!!!',
+      `data:image/png;base64,${referencePng.toString('base64')}=`,
+      `data:image/png;base64,${referencePng.toString('base64').replace(/=+$/, '')}`,
+      `data:image/png;base64,${referencePng.toString('base64').slice(0, 12)}\n${referencePng.toString('base64').slice(12)}`,
+      `data:image/png;base64,${Buffer.from('<html>not an image</html>').toString('base64')}`,
+      chatPngUrl.replace('image/png', 'image/jpeg'),
+    ].map((url) => visionMessages(url)),
+  ]
+  for (const [index, messages] of invalidMessages.entries()) {
+    const response = await handleRequest(request('/chat/completions', { body: { model: '导管佛祖模型', messages } }), env, () => assert.fail(`invalid case ${index} must not call upstream`))
+    assert.equal(response.status, 400, `invalid case ${index}`)
+  }
+})
+
+test('vision enforces per-message, total image and text limits without losing valid history', async () => {
+  const history = Array.from({ length: MAX_CHAT_IMAGES / 3 }, () => ({ role: 'user', content: [chatText(), ...Array.from({ length: 3 }, () => chatImage())] }))
+  let calls = 0
+  const valid = await handleRequest(request('/chat/completions', { body: { model: '导管佛祖模型', messages: history } }), env, async (_url, options) => {
+    calls++
+    assert.equal(JSON.parse(options.body).messages.flatMap((message) => message.content).filter((part) => part.type === 'image_url').length, MAX_CHAT_IMAGES)
+    return jsonResponse({ choices: [{ message: { content: '收到。' } }] })
+  })
+  assert.equal(valid.status, 200)
+  assert.equal(calls, 1)
+  for (const messages of [
+    [...history, ...visionMessages()],
+    [{ role: 'user', content: [chatText(), ...Array.from({ length: 4 }, () => chatImage())] }],
+    [{ role: 'user', content: [chatText('x'.repeat(8001)), chatText('y'.repeat(8000)), chatImage()] }],
+    [...Array.from({ length: 4 }, () => ({ role: 'user', content: 'x'.repeat(16000) })), ...visionMessages()],
+    [...Array.from({ length: 50 }, () => ({ role: 'user', content: 'hi' })), ...visionMessages()],
+  ]) {
+    const response = await handleRequest(request('/chat/completions', { body: { model: '导管佛祖模型', messages } }), env, () => assert.fail('over-limit content must not call upstream'))
+    assert.equal(response.status, 400)
+  }
+  const oversizedBytes = Buffer.alloc(Math.ceil(MAX_CHAT_IMAGE_DATA_URL_BYTES * 3 / 4))
+  oversizedBytes.set(referencePng)
+  const oversizedUrl = `data:image/png;base64,${oversizedBytes.toString('base64')}`
+  assert.ok(oversizedUrl.length > MAX_CHAT_IMAGE_DATA_URL_BYTES)
+  const oversized = await handleRequest(request('/chat/completions', { body: { model: '导管佛祖模型', messages: visionMessages(oversizedUrl) } }), env, () => assert.fail('oversized inline image must not call upstream'))
+  assert.ok([400, 413].includes(oversized.status))
+})
+
+test('chat alone accepts larger image JSON and handles fragmented request bytes', async () => {
+  const imageBytes = Buffer.alloc(192 * 1024)
+  imageBytes.set(referencePng)
+  const dataUrl = `data:image/png;base64,${imageBytes.toString('base64')}`
+  const body = new TextEncoder().encode(JSON.stringify({ model: '导管佛祖模型', messages: visionMessages(dataUrl) }))
+  assert.ok(body.length > 128 * 1024)
+  let offset = 0
+  const input = new Request('https://fozuai-api.example/chat/completions', {
+    method: 'POST', duplex: 'half', headers: { Origin: env.ALLOWED_ORIGIN, 'Content-Type': 'application/json', 'Content-Length': '1' },
+    body: new ReadableStream({
+      pull(controller) {
+        if (offset === body.length) return controller.close()
+        const end = Math.min(body.length, offset + (offset < 2048 ? 1 : 137))
+        controller.enqueue(body.subarray(offset, end))
+        offset = end
+      },
+    }),
+  })
+  let calls = 0
+  const response = await handleRequest(input, env, async (_url, options) => {
+    calls++
+    assert.equal(JSON.parse(options.body).messages[0].content[1].image_url.url, dataUrl)
+    return jsonResponse({ choices: [{ message: { content: '收到图片。' } }] })
+  })
+  assert.equal(response.status, 200)
+  assert.equal(calls, 1)
+  const imageResponse = await handleRequest(request('/v1/images/generations', { body: { prompt: '莲花', ignored: dataUrl } }), env, () => assert.fail('generation body limit must stay at 128 KiB'))
+  assert.equal(imageResponse.status, 413)
+})
+
+test('chat request byte limit cancels oversized streams even with a misleading Content-Length', async () => {
+  for (const declaredLength of [undefined, '1', String(MAX_CHAT_REQUEST_BYTES + 1)]) {
+    let emitted = 0
+    let cancelled = false
+    const chunk = new Uint8Array(256 * 1024)
+    const input = new Request('https://fozuai-api.example/v1/chat/completions', {
+      method: 'POST', duplex: 'half', headers: { Origin: env.ALLOWED_ORIGIN, 'Content-Type': 'application/json', ...(declaredLength ? { 'Content-Length': declaredLength } : {}) },
+      body: new ReadableStream({
+        pull(controller) { emitted++; controller.enqueue(chunk) },
+        cancel() { cancelled = true },
+      }),
+    })
+    const response = await handleRequest(input, env, () => assert.fail('oversized stream must not call upstream'))
+    assert.equal(response.status, 413)
+    assert.equal((await read(response)).error.code, 'payload_too_large')
+    assert.equal(cancelled, true, `Content-Length: ${declaredLength ?? 'absent'}`)
+    assert.ok(emitted <= Math.ceil(MAX_CHAT_REQUEST_BYTES / chunk.length) + 2)
+  }
+})
+
 function uploadRequest(files = [{ bytes: referencePng, type: 'image/png' }]) {
   const form = new FormData()
   for (const file of files) form.append('file', new Blob([file.bytes], { type: file.type }), 'private-filename.png')

@@ -121,7 +121,7 @@ button:focus-visible, textarea:focus-visible, select:focus-visible { outline: 3p
 @keyframes bounce { 0%, 60%, 100% { transform: translateY(0); opacity: .55; } 30% { transform: translateY(-4px); opacity: 1; } }
 .composer-wrap { position: relative; z-index: 3; width: min(840px, calc(100% - 68px)); margin: 0 auto; padding: 16px 0 max(25px, env(safe-area-inset-bottom)); background: var(--canvas); }
 .composer-shell { position: relative; padding: 13px 14px 10px; background: rgba(255,255,255,.94); border: 1px solid #dbe6e8; border-radius: 18px; box-shadow: var(--shadow), 0 0 0 4px rgba(212,236,232,.23); transition: border .2s, box-shadow .2s; }
-.composer-shell.image-composer { max-height: 58dvh; overflow-y: auto; overscroll-behavior: contain; }
+.composer-shell.image-composer, .composer-shell.has-attachments { max-height: 58dvh; overflow-y: auto; overscroll-behavior: contain; }
 .composer-shell:focus-within { border-color: #a8d9d0; box-shadow: 0 22px 70px rgba(25,57,72,.1), 0 0 0 4px rgba(170,223,214,.23); }
 .composer-mode { display: flex; align-items: center; gap: 7px; width: fit-content; margin: -2px 0 8px; padding: 5px 8px; color: #247365; background: #eef8f5; border-radius: 8px; font-size: 10px; font-weight: 650; }
 .composer-mode button { margin-left: 2px; padding: 0; color: #91a7a5; background: transparent; font-size: 10px; text-decoration: underline; text-underline-offset: 2px; }

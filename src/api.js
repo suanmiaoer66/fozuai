@@ -1,4 +1,5 @@
 import { MAX_REFERENCE_IMAGES, MAX_REFERENCE_IMAGE_BYTES, isUploadedReferenceUrl } from '../shared/referenceImages.js'
+import { MAX_CHAT_IMAGES, MAX_CHAT_IMAGE_DATA_URL_BYTES, MAX_CHAT_REQUEST_BYTES, MAX_CHAT_MESSAGE_CHARS, MAX_CHAT_TEXT_CHARS, MAX_CHAT_MESSAGES } from '../shared/chat.js'
 
 export class ApiError extends Error {
   constructor(message, code = 'request_failed', status) {
@@ -36,6 +37,13 @@ async function requestJson(url, options, fetchImpl) {
     if (response.status === 404) throw new ApiError('服务地址无法使用，请联系网站管理员检查接口配置。', 'not_found', response.status)
     if (response.status === 413) throw new ApiError('图片或请求内容过大，请缩小图片后重试。', 'payload_too_large', response.status)
     if (response.status >= 500) throw new ApiError('服务暂时不可用，请稍后重试；若持续失败，请联系网站管理员检查服务配置与账户额度。', 'service_error', response.status)
+    if (response.status === 400) {
+      const data = await response.json().catch(() => null)
+      if (['invalid_request', 'vision_model_unsupported', 'invalid_json'].includes(data?.error?.code)
+        && typeof data.error.message === 'string' && data.error.message.length <= 300) {
+        throw new ApiError(data.error.message, data.error.code, response.status)
+      }
+    }
     throw new ApiError(`请求未成功（${response.status}），请检查输入后重试。`, 'request_failed', response.status)
   }
 
@@ -47,13 +55,44 @@ async function requestJson(url, options, fetchImpl) {
   }
 }
 
+// Keep sent images in the same turns as their questions, including follow-ups.
+// Never silently truncate image context or mix image-generation prompts into chat.
+export function buildChatMessages(history) {
+  let imageCount = 0
+  let textLength = 0
+  const messages = [
+    { role: 'system', content: '你是佛祖 AI，一位温和、清晰、擅长拆解复杂问题的中文助手。' },
+    ...history.filter((message) => ['user', 'assistant'].includes(message.role) && message.mode !== 'image' && !message.failed).map((message) => {
+      const images = message.role === 'user' ? (message.referenceImages || []) : []
+      if (!Array.isArray(images) || images.length > MAX_REFERENCE_IMAGES) throw new ApiError('每次最多添加 3 张图片。', 'invalid_request')
+      imageCount += images.length
+      if (imageCount > MAX_CHAT_IMAGES) throw new ApiError('本轮对话已超过 12 张图片，请新建对话后继续。', 'context_limit')
+      if (typeof message.content !== 'string' || !message.content.trim() || message.content.length > MAX_CHAT_MESSAGE_CHARS) throw new ApiError('每条对话须包含不超过 16000 字的问题。', 'invalid_request')
+      const content = images.length ? [
+        { type: 'text', text: message.content },
+        ...images.map((image) => {
+          if (typeof image.dataUrl !== 'string' || image.dataUrl.length > MAX_CHAT_IMAGE_DATA_URL_BYTES
+            || !/^data:image\/(?:png|jpeg|webp);base64,/.test(image.dataUrl)) throw new ApiError('图片无效或过大，请重新选择图片。', 'invalid_request')
+          return { type: 'image_url', image_url: { url: image.dataUrl, detail: 'auto' } }
+        }),
+      ] : message.content
+      return { role: message.role, content }
+    }),
+  ]
+  for (const message of messages) textLength += typeof message.content === 'string' ? message.content.length : message.content[0].text.length
+  if (messages.length > MAX_CHAT_MESSAGES || textLength > MAX_CHAT_TEXT_CHARS) throw new ApiError('这轮对话内容较多，请新建对话后继续。', 'context_limit')
+  return messages
+}
+
 export async function requestChat({ config, messages, model, signal, fetchImpl = fetch }) {
   if (!config.chatProxyUrl) throw new ApiError('对话服务尚未配置，请联系网站管理员连接对话服务。', 'not_configured')
+  const body = JSON.stringify({ model, messages, stream: false })
+  if (new TextEncoder().encode(body).byteLength > MAX_CHAT_REQUEST_BYTES) throw new ApiError('图片或对话内容过多，请缩小图片或新建对话。', 'context_limit')
   const data = await requestJson(`${config.chatProxyUrl}/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     signal,
-    body: JSON.stringify({ model, messages, stream: false }),
+    body,
   }, fetchImpl)
   const content = data?.choices?.[0]?.message?.content
   if (typeof content !== 'string' || !content.trim()) {

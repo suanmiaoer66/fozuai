@@ -1,4 +1,5 @@
 import { MAX_REFERENCE_IMAGES, MAX_REFERENCE_IMAGE_BYTES, REFERENCE_IMAGE_TYPES, isUploadedReferenceUrl } from '../shared/referenceImages.js'
+import { MAX_CHAT_IMAGES, MAX_CHAT_IMAGE_DATA_URL_BYTES, MAX_CHAT_REQUEST_BYTES, MAX_CHAT_MESSAGE_CHARS, MAX_CHAT_TEXT_CHARS, MAX_CHAT_MESSAGES } from '../shared/chat.js'
 
 const DEFAULT_ORIGIN = 'https://suanmiaoer66.github.io'
 const MAX_REQUEST_BYTES = 128 * 1024
@@ -66,31 +67,26 @@ async function readJson(body, maxBytes, upstream = false) {
   }
   if (!body) fail()
   const reader = body.getReader()
-  const chunks = []
+  // A single bounded buffer avoids retaining arbitrarily many tiny chunks.
+  const bytes = new Uint8Array(maxBytes)
   let size = 0
   try {
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
-      size += value.byteLength
-      if (size > maxBytes) {
+      if (size + value.byteLength > maxBytes) {
         await reader.cancel()
-        throw new HttpError(upstream ? 502 : 413, upstream ? 'invalid_upstream_response' : 'payload_too_large', upstream ? '模型服务返回的内容过大。' : '输入内容过长，请缩短后重试。')
+        throw new HttpError(upstream ? 502 : 413, upstream ? 'invalid_upstream_response' : 'payload_too_large', upstream ? '模型服务返回的内容过大。' : '图片或对话内容过多，请缩小图片或新建对话。')
       }
-      chunks.push(value)
+      bytes.set(value, size)
+      size += value.byteLength
     }
   } finally {
     reader.releaseLock()
   }
-  const bytes = new Uint8Array(size)
-  let offset = 0
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset)
-    offset += chunk.byteLength
-  }
   let data
   try {
-    data = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))
+    data = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, size)))
   } catch {
     fail()
   }
@@ -98,11 +94,16 @@ async function readJson(body, maxBytes, upstream = false) {
   return data
 }
 
-async function requestBody(request) {
+async function requestBody(request, maxBytes = MAX_REQUEST_BYTES) {
   if (request.headers.get('Content-Type')?.split(';')[0].trim().toLowerCase() !== 'application/json') {
     throw new HttpError(415, 'unsupported_media_type', '请使用 application/json 发送请求。')
   }
-  return readJson(request.body, MAX_REQUEST_BYTES)
+  const length = request.headers.get('Content-Length')
+  if (length !== null && (!/^\d+$/.test(length) || Number(length) > maxBytes)) {
+    await request.body?.cancel()
+    throw new HttpError(413, 'payload_too_large', '图片或对话内容过多，请缩小图片或新建对话。')
+  }
+  return readJson(request.body, maxBytes)
 }
 
 async function referenceUploadBody(request) {
@@ -159,19 +160,54 @@ function resolveChatModel(label, env) {
   return null
 }
 
+function chatImageUrl(value) {
+  if (typeof value !== 'string' || value.length > MAX_CHAT_IMAGE_DATA_URL_BYTES) invalid('每张对话图片须小于 1 MiB，请重新选择图片。')
+  const header = /^data:(image\/(?:png|jpeg|webp));base64,/.exec(value)
+  if (!header) invalid('对话图片仅支持 PNG、JPEG 和 WebP，请重新选择图片。')
+  const encoded = value.slice(header[0].length)
+  // Check syntax and padding without decoding the whole image into another copy.
+  if (!encoded.length || encoded.length % 4 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) invalid('图片编码无效，请重新选择图片。')
+  const prefix = Uint8Array.from(atob(encoded.slice(0, 48)), (char) => char.charCodeAt(0))
+  if (!imageSignatureMatches(prefix, header[1])) invalid('图片内容与格式不匹配，请重新选择图片。')
+  return value
+}
+
 function chatPayload(data, env) {
   const resolved = resolveChatModel(data.model, env)
   if (!resolved || !SUPPORTED_DEEPSEEK_MODELS.has(resolved.model)) invalid('请选择支持的对话模型。')
   const { model, advanced } = resolved
   if (data.stream !== undefined && data.stream !== false) invalid('暂不支持流式请求。')
-  if (!Array.isArray(data.messages) || data.messages.length < 1 || data.messages.length > 50) invalid('对话消息数量须在 1 到 50 条之间。')
+  if (!Array.isArray(data.messages) || data.messages.length < 1 || data.messages.length > MAX_CHAT_MESSAGES) invalid('对话消息数量须在 1 到 50 条之间，请新建对话后继续。')
   let length = 0
+  let imageCount = 0
   const messages = data.messages.map((message) => {
-    if (!message || !['system', 'user', 'assistant'].includes(message.role) || typeof message.content !== 'string' || !message.content.trim() || message.content.length > 16000) invalid('每条对话必须包含有效角色及不超过 16000 字的文本。')
-    length += message.content.length
-    return { role: message.role, content: message.content }
+    if (!message || !['system', 'user', 'assistant'].includes(message.role)) invalid('对话角色无效。')
+    let messageLength = 0
+    const text = (value) => {
+      if (typeof value !== 'string' || !value.trim()) invalid('对话文本不能为空。')
+      messageLength += value.length
+      if (messageLength > MAX_CHAT_MESSAGE_CHARS) invalid('每条对话文本不能超过 16000 字。')
+      return value
+    }
+    let content
+    if (typeof message.content === 'string') {
+      content = text(message.content)
+    } else {
+      if (message.role !== 'user' || !Array.isArray(message.content) || !message.content.length || message.content.length > MAX_REFERENCE_IMAGES + 1) invalid('只有用户消息可以包含图片，每次最多添加 3 张。')
+      let messageImages = 0
+      content = message.content.map((part) => {
+        if (part?.type === 'text') return { type: 'text', text: text(part.text) }
+        if (part?.type !== 'image_url') invalid('对话内容类型不受支持。')
+        if (++messageImages > MAX_REFERENCE_IMAGES) invalid('每次最多添加 3 张图片。')
+        if (++imageCount > MAX_CHAT_IMAGES) invalid('本轮对话已超过 12 张图片，请新建对话后继续。')
+        return { type: 'image_url', image_url: { url: chatImageUrl(part.image_url?.url), detail: 'auto' } }
+      })
+    }
+    length += messageLength
+    return { role: message.role, content }
   })
-  if (length > 64000 || !messages.some((message) => message.role === 'user')) invalid('对话内容过长或缺少用户消息。')
+  if (length > MAX_CHAT_TEXT_CHARS || !messages.some((message) => message.role === 'user')) invalid('对话内容过长或缺少用户消息，请新建对话后继续。')
+  if (imageCount && model !== 'deepseek-flash') throw new HttpError(400, 'vision_model_unsupported', '当前模型暂不支持看图，请切换到导管佛祖模型或联系管理员配置 deepseek-flash。')
   // Explicitly construct the payload: callers cannot override upstream URLs, tools or billing options.
   const payload = { model, messages, stream: false, max_tokens: 4096 }
   // DeepSeek-V4 models expose explicit thinking controls. Legacy chat/reasoner IDs
@@ -448,7 +484,7 @@ export async function handleRequest(request, env, fetchImpl = fetch, timeoutMs =
     }
     if (isHealth) return json({ status: 'ok', configured: { chat: configuredSecret(env.DEEPSEEK_API_KEY), image: configuredSecret(env.APIMART_API_KEY) } })
     if (isChat) {
-      const payload = chatPayload(await requestBody(request), env)
+      const payload = chatPayload(await requestBody(request, MAX_CHAT_REQUEST_BYTES), env)
       const root = upstreamRoot(env.DEEPSEEK_BASE_URL, 'https://api.deepseek.com')
       return json(chatResult(await upstreamRequest(`${root}/chat/completions`, 'POST', payload, env.DEEPSEEK_API_KEY, fetchImpl, timeoutMs), env))
     }

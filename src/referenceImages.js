@@ -168,9 +168,9 @@ export async function prepareReferenceImage(file, { signal } = {}) {
     throw new Error('请选择本地图片文件。')
   }
   const declaredType = declaredImageType(file)
-  if (!declaredType) throw new Error('参考图仅支持 PNG、JPEG 和 WebP 格式。')
+  if (!declaredType) throw new Error('图片仅支持 PNG、JPEG 和 WebP 格式。')
   if (!file.size) throw new Error('这张图片是空文件，请重新选择。')
-  if (file.size > MAX_REFERENCE_SOURCE_BYTES) throw new Error('每张参考图不能超过 10 MB，请先缩小图片。')
+  if (file.size > MAX_REFERENCE_SOURCE_BYTES) throw new Error('每张图片不能超过 10 MB，请先缩小图片。')
 
   const header = await readBlob(file.slice(0, 12), 'readAsArrayBuffer', signal)
   const sourceType = imageTypeFromBytes(header)

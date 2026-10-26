@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { getApiConfig, requestChat, requestImage } from './api.js'
+import { buildChatMessages, getApiConfig, requestChat, requestImage } from './api.js'
 import ImageCard from './ImageCard.jsx'
 import ReferenceImages from './ReferenceImages.jsx'
 import { MAX_REFERENCE_IMAGES, isReferenceImageFile, prepareReferenceImage } from './referenceImages.js'
@@ -84,6 +84,8 @@ function App() {
   const messageThreadRef = useRef(null)
   const followLatest = useRef(true)
   const hasMessages = messages.length > 0
+  const attachmentLabel = generationMode === 'image' ? '参考图' : '图片'
+  const canSend = Boolean(input.trim() || (generationMode === 'chat' && referenceImages.length)) && !isThinking && !referenceProcessing
 
   useEffect(() => () => {
     pendingRequest.current?.abort()
@@ -111,18 +113,18 @@ function App() {
     const files = Array.from(fileList || [])
     if (!files.length) return
     if (pendingRequest.current || referenceProcessingRef.current) {
-      setReferenceError('请等待当前处理完成后再添加参考图。')
+      setReferenceError(`请等待当前处理完成后再添加${attachmentLabel}。`)
       return
     }
     const remaining = MAX_REFERENCE_IMAGES - referenceImagesRef.current.length
     if (remaining <= 0) {
-      setReferenceError(`最多添加 ${MAX_REFERENCE_IMAGES} 张参考图，请先移除一张。`)
+      setReferenceError(`最多添加 ${MAX_REFERENCE_IMAGES} 张${attachmentLabel}，请先移除一张。`)
       return
     }
     const candidates = files.filter(isReferenceImageFile)
     const errors = []
     if (candidates.length !== files.length) errors.push('仅支持 PNG、JPEG、WebP 图片，其他文件未添加。')
-    if (candidates.length > remaining) errors.push(`最多添加 ${MAX_REFERENCE_IMAGES} 张参考图，超出的图片未添加。`)
+    if (candidates.length > remaining) errors.push(`最多添加 ${MAX_REFERENCE_IMAGES} 张${attachmentLabel}，超出的图片未添加。`)
     const selectedFiles = candidates.slice(0, remaining)
     if (!selectedFiles.length) {
       setReferenceError(errors.join(' '))
@@ -130,7 +132,6 @@ function App() {
     }
     const controller = new AbortController()
     referenceProcessingRef.current = controller
-    setGenerationMode('image')
     setModelOpen(false)
     setSidebarOpen(false)
     setReferenceError('')
@@ -138,7 +139,7 @@ function App() {
     try {
       for (let index = 0; index < selectedFiles.length; index += 1) {
         if (controller.signal.aborted) return
-        setReferenceProgress(`正在处理参考图（${index + 1}/${selectedFiles.length}）…`)
+        setReferenceProgress(`正在处理${attachmentLabel}（${index + 1}/${selectedFiles.length}）…`)
         try {
           const image = await prepareReferenceImage(selectedFiles[index], { signal: controller.signal })
           if (referenceProcessingRef.current !== controller || controller.signal.aborted) return
@@ -244,18 +245,21 @@ function App() {
   }, [])
 
   const sendMessage = async (text = input) => {
-    const content = text.trim()
-    if (!content || pendingRequest.current || referenceProcessingRef.current) return
-    followLatest.current = true
+    if (pendingRequest.current || referenceProcessingRef.current) return
     const mode = generationMode
+    const referenceSnapshot = referenceImagesRef.current.map((image) => ({ ...image }))
+    const content = text.trim() || (mode === 'chat' && referenceSnapshot.length ? `请描述${referenceSnapshot.length > 1 ? '这些' : '这张'}图片的内容。` : '')
+    if (!content) return
+    followLatest.current = true
     const size = imageSize
     const resolution = imageResolution
-    const referenceSnapshot = mode === 'image' ? referenceImagesRef.current.map((image) => ({ ...image })) : []
+    const userMessage = { id: globalThis.crypto?.randomUUID?.() || `message-${Date.now()}-${Math.random().toString(36).slice(2)}`, role: 'user', content, mode, referenceImages: referenceSnapshot }
     const controller = new AbortController()
     pendingRequest.current = controller
     const timeout = window.setTimeout(() => controller.abort('timeout'), mode === 'image' ? 360000 : 180000)
     if (mode === 'chat') setInput('')
-    setMessages((current) => [...current, { role: 'user', content, mode, referenceImages: referenceSnapshot }])
+    setModelOpen(false)
+    setMessages((current) => [...current, userMessage])
     setIsThinking(true)
     setRequestProgress(mode === 'image' ? (referenceSnapshot.length ? '准备上传参考图…' : '正在生成图片…') : '')
     setConnection((current) => ({ ...current, [mode]: 'loading' }))
@@ -271,16 +275,13 @@ function App() {
           config: apiConfig,
           signal: controller.signal,
           model,
-          messages: [
-            { role: 'system', content: '你是佛祖 AI，一位温和、清晰、擅长拆解复杂问题的中文助手。' },
-            ...messages.filter((item) => item.role !== 'error' && item.mode !== 'image').map((item) => ({ role: item.role, content: item.content })),
-            { role: 'user', content },
-          ],
+          messages: buildChatMessages([...messages, userMessage]),
         })
         reply = { role: 'assistant', content: replyContent, mode }
       }
       if (pendingRequest.current !== controller || controller.signal.aborted) return
       setMessages((current) => [...current, reply])
+      if (mode === 'chat') clearReferences()
       setConnection((current) => ({ ...current, [mode]: 'success' }))
     } catch (error) {
       if (pendingRequest.current !== controller) return
@@ -288,7 +289,7 @@ function App() {
       const message = controller.signal.reason === 'timeout'
         ? (mode === 'image' ? '图片生成等待超时，服务端任务可能仍在进行，请稍后再试。' : '回复等待超时，请稍后重试，或切换到导管佛祖模型。')
         : error.message
-      setMessages((current) => [...current, { role: 'error', content: message, mode }])
+      setMessages((current) => [...current.map((item) => item.id === userMessage.id ? { ...item, failed: true } : item), { role: 'error', content: message, mode }])
       setInput((current) => current || content)
       setConnection((current) => ({ ...current, [mode]: error.code === 'not_configured' ? 'unconfigured' : 'error' }))
     } finally {
@@ -315,15 +316,18 @@ function App() {
     setSidebarOpen(false)
   }
 
-  const activateImageMode = (prompt = '') => {
+  const activateImageMode = (prompt) => {
+    if (pendingRequest.current || referenceProcessingRef.current) return
     setGenerationMode('image')
-    setInput(prompt)
+    if (typeof prompt === 'string') setInput(prompt)
+    setModelOpen(false)
+    setReferenceError('')
     setSidebarOpen(false)
   }
 
   const exitImageMode = () => {
-    if (pendingRequest.current) return
-    clearReferences()
+    if (pendingRequest.current || referenceProcessingRef.current) return
+    setReferenceError('')
     setGenerationMode('chat')
   }
 
@@ -395,50 +399,50 @@ function App() {
           ) : (
             <div ref={messageThreadRef} className="message-thread">
               <div className="thread-intro"><span className="mini-mark"><img src={logoUrl} alt="" /></span><span>佛祖 AI · {model}</span></div>
-              {messages.map((message, index) => <div className={`message-block ${message.role} ${message.imageUrl ? 'has-image' : ''}`} key={`${message.role}-${index}`}><div className="message-avatar">{message.role === 'user' ? '林' : <img src={logoUrl} alt="" />}</div><div className="message-body"><div className="message-author">{message.role === 'user' ? '你' : '佛祖 AI'}</div><p>{message.content}</p>{message.referenceImages?.length > 0 && <ReferenceImages images={message.referenceImages} />}{message.imageUrl && <ImageCard message={message} config={apiConfig} />}</div></div>)}
+              {messages.map((message, index) => <div className={`message-block ${message.role} ${message.imageUrl ? 'has-image' : ''}`} key={`${message.role}-${index}`}><div className="message-avatar">{message.role === 'user' ? '林' : <img src={logoUrl} alt="" />}</div><div className="message-body"><div className="message-author">{message.role === 'user' ? '你' : '佛祖 AI'}</div><p>{message.content}</p>{message.referenceImages?.length > 0 && <ReferenceImages images={message.referenceImages} mode={message.mode} />}{message.imageUrl && <ImageCard message={message} config={apiConfig} />}</div></div>)}
               {isThinking && <div className="message-block assistant"><div className="message-avatar"><img src={logoUrl} alt="" /></div><div className="message-body"><div className="message-author">佛祖 AI</div><div className="thinking-wrap"><div className="thinking"><span /><span /><span /></div><span className="thinking-label" role="status">{requestProgress || '正在思考…'}</span></div></div></div>}
             </div>
           )}
         </section>
 
         <div className="composer-wrap">
-          <div className={`composer-shell ${generationMode === 'image' ? 'image-composer' : ''} ${isDragging ? 'is-dragging' : ''}`}
+          <div className={`composer-shell ${generationMode === 'image' ? 'image-composer' : ''} ${referenceImages.length || referenceProcessing ? 'has-attachments' : ''} ${isDragging ? 'is-dragging' : ''}`}
             onPaste={handlePaste} onDragEnter={handleDragEnter} onDragLeave={handleDragLeave}
             onDragOver={(event) => { if (isFileDrag(event)) { event.preventDefault(); event.dataTransfer.dropEffect = isThinking || referenceProcessing ? 'none' : 'copy' } }} onDrop={handleDrop}>
             <input ref={referenceFileInput} type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp" multiple hidden
-              onChange={(event) => { const files = Array.from(event.target.files || []); event.target.value = ''; addReferenceFiles(files) }} aria-label="选择参考图片" />
-            {generationMode === 'image' && <div className="composer-mode"><ImageSparkle size={15} /><span>图片生成 · GPT-Image-2</span><button onClick={exitImageMode} disabled={isThinking}>退出</button></div>}
+              onChange={(event) => { const files = Array.from(event.target.files || []); event.target.value = ''; addReferenceFiles(files) }} aria-label={`选择${attachmentLabel}`} />
+            {generationMode === 'image' && <div className="composer-mode"><ImageSparkle size={15} /><span>图片生成 · GPT-Image-2</span><button onClick={exitImageMode} disabled={isThinking || referenceProcessing}>退出</button></div>}
             {generationMode === 'image' && <div className="image-options" aria-label="图片生成选项">
-              <label>比例<select value={imageSize} onChange={(event) => setImageSize(event.target.value)} aria-label="图片比例">{imageRatios.map((size) => <option value={size} key={size}>{size === 'auto' ? '自动' : size}</option>)}</select></label>
-              <label>分辨率<select value={imageResolution} onChange={(event) => setImageResolution(event.target.value)} aria-label="图片分辨率">{imageResolutions.map((resolution) => <option value={resolution} key={resolution}>{resolution.toUpperCase()}</option>)}</select></label>
+              <label>比例<select value={imageSize} disabled={isThinking} onChange={(event) => setImageSize(event.target.value)} aria-label="图片比例">{imageRatios.map((size) => <option value={size} key={size}>{size === 'auto' ? '自动' : size}</option>)}</select></label>
+              <label>分辨率<select value={imageResolution} disabled={isThinking} onChange={(event) => setImageResolution(event.target.value)} aria-label="图片分辨率">{imageResolutions.map((resolution) => <option value={resolution} key={resolution}>{resolution.toUpperCase()}</option>)}</select></label>
               <span className="image-options-hint">{referenceImages.length ? '根据参考图继续创作' : '选好画幅，描述你的想象'}</span>
             </div>}
-            {(referenceImages.length > 0 || referenceProcessing) && <ReferenceImages images={referenceImages} onAdd={pickReferenceFiles} onRemove={removeReference} disabled={isThinking || referenceProcessing} processing={referenceProcessing} />}
+            {(referenceImages.length > 0 || referenceProcessing) && <ReferenceImages images={referenceImages} mode={generationMode} onAdd={pickReferenceFiles} onRemove={removeReference} disabled={isThinking || referenceProcessing} processing={referenceProcessing} />}
             {referenceProcessing && <div className="reference-processing-note" role="status">{referenceProgress}</div>}
             {referenceError && <div className="reference-error-note" role="alert">{referenceError}</div>}
             <textarea value={input} onChange={(event) => setInput(event.target.value)}
               onKeyDown={(event) => { if (event.nativeEvent.isComposing || event.keyCode === 229) return; if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage() } }}
-              placeholder={generationMode === 'image' ? (referenceImages.length ? '描述参考图要怎么改，可用“图1”“图2”指明图片' : '描述你想生成的图片，也可以添加参考图') : '问我任何问题，或描述你想完成的事'} rows="1" aria-label="输入消息" />
+              placeholder={generationMode === 'image' ? (referenceImages.length ? '描述参考图要怎么改，可用“图1”“图2”指明图片' : '描述你想生成的图片，也可以添加参考图') : (referenceImages.length ? '想了解图片的什么？可用“图1”“图2”指明图片' : '问我任何问题，也可以添加图片来提问')} rows="1" aria-label="输入消息" />
             <div className="composer-toolbar">
               <div className="composer-actions">
-                <button className={`tool-button ${referenceImages.length ? 'active' : ''}`} onClick={pickReferenceFiles} disabled={isThinking || referenceProcessing || referenceImages.length >= MAX_REFERENCE_IMAGES} aria-label="添加参考图附件" title="添加参考图"><Paperclip size={17} /></button>
-                <button className={`tool-button ${referenceImages.length ? 'active' : ''}`} onClick={pickReferenceFiles} disabled={isThinking || referenceProcessing || referenceImages.length >= MAX_REFERENCE_IMAGES} aria-label="上传参考图片" title="上传参考图片"><Image size={17} /></button>
-                <button className={`tool-button ${generationMode === 'image' ? 'active' : ''}`} onClick={() => generationMode === 'image' ? exitImageMode() : activateImageMode(input)} disabled={isThinking} aria-label="图片生成"><ImageSparkle size={17} /></button>
+                <button className={`tool-button ${referenceImages.length ? 'active' : ''}`} onClick={pickReferenceFiles} disabled={isThinking || referenceProcessing || referenceImages.length >= MAX_REFERENCE_IMAGES} aria-label={`添加${attachmentLabel}附件`} title={`添加${attachmentLabel}`}><Paperclip size={17} /></button>
+                <button className={`tool-button ${referenceImages.length ? 'active' : ''}`} onClick={pickReferenceFiles} disabled={isThinking || referenceProcessing || referenceImages.length >= MAX_REFERENCE_IMAGES} aria-label={generationMode === 'image' ? '上传参考图片' : '上传图片提问'} title={generationMode === 'image' ? '上传参考图片' : '上传图片提问'}><Image size={17} /></button>
+                <button className={`tool-button ${generationMode === 'image' ? 'active' : ''}`} onClick={() => generationMode === 'image' ? exitImageMode() : activateImageMode(input)} disabled={isThinking || referenceProcessing} aria-label="图片生成" aria-pressed={generationMode === 'image'}><ImageSparkle size={17} /></button>
                 <button className="tool-button" aria-label="语音输入"><Mic size={17} /></button>
               </div>
               <div className="composer-right">
                 {generationMode === 'chat' && <div className="model-select-wrap">
-                  <button className="model-select" onClick={() => setModelOpen(!modelOpen)}><span className={`model-dot status-${connection.chat}`} />{model}<ChevronDown size={14} /></button>
+                  <button className="model-select" disabled={isThinking} onClick={() => setModelOpen(!modelOpen)}><span className={`model-dot status-${connection.chat}`} />{model}<ChevronDown size={14} /></button>
                   {modelOpen && <div className="model-menu">
                     <button className={model === '高级佛祖模型' ? 'selected' : ''} onClick={() => { setModel('高级佛祖模型'); setModelOpen(false) }}>高级佛祖模型<small>深度思考</small></button>
                     <button className={model === '导管佛祖模型' ? 'selected' : ''} onClick={() => { setModel('导管佛祖模型'); setModelOpen(false) }}>导管佛祖模型<small>快速对话</small></button>
                   </div>}
                 </div>}
-                <button className={`send-button ${input.trim() && !isThinking && !referenceProcessing ? 'ready' : ''}`} disabled={!input.trim() || isThinking || referenceProcessing} onClick={() => sendMessage()} aria-label={generationMode === 'image' ? '生成图片' : '发送'}><Send size={17} weight="Outline" /></button>
+                <button className={`send-button ${canSend ? 'ready' : ''}`} disabled={!canSend} onClick={() => sendMessage()} aria-label={generationMode === 'image' ? '生成图片' : '发送'}><Send size={17} weight="Outline" /></button>
               </div>
             </div>
             {generationMode === 'image' && !referenceImages.length && !referenceProcessing && <div className="reference-upload-hint">可添加、粘贴或拖入参考图 · 最多 3 张 · PNG/JPEG/WebP · 每张不超过 10 MB</div>}
-            {isDragging && <div className="reference-drop-overlay"><ImageSparkle size={25} /><span>{isThinking || referenceProcessing ? '请等待当前处理完成' : '松开添加参考图'}</span></div>}
+            {isDragging && <div className="reference-drop-overlay"><ImageSparkle size={25} /><span>{isThinking || referenceProcessing ? '请等待当前处理完成' : `松开添加${attachmentLabel}`}</span></div>}
           </div>
           <p className="composer-note">{statusLabels[currentStatus]} · 佛祖 AI 可能会犯错，请核对重要信息</p>
         </div>

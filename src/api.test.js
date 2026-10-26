@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { getApiConfig, requestChat, requestImage, downloadImage } from './api.js'
+import { getApiConfig, buildChatMessages, requestChat, requestImage, downloadImage } from './api.js'
 
 const config = getApiConfig({ VITE_DEEPSEEK_API_PROXY_URL: 'https://proxy.example/v1/', VITE_IMAGE_API_PROXY_URL: 'https://proxy.example/v1/' })
 const json = (data, status = 200) => new Response(JSON.stringify(data), { status })
@@ -107,6 +107,51 @@ test('aborting an image request cancels the wait before its next poll', async ()
 })
 
 const referenceDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6ZQAAAABJRU5ErkJggg=='
+
+test('chat keeps the original images on follow-ups and sends only to the chat endpoint', async () => {
+  const referenceImages = [{ id: 'image-1', dataUrl: referenceDataUrl, name: 'private-filename.png' }]
+  const messages = buildChatMessages([
+    { role: 'user', mode: 'chat', content: '图中是什么？', referenceImages },
+    { role: 'assistant', mode: 'chat', content: '一个圆形。' },
+    { role: 'user', mode: 'image', content: '画一个红色圆形', referenceImages },
+    { role: 'assistant', mode: 'image', content: '已生成', imageUrl: 'https://example.com/generated.png' },
+    { role: 'user', mode: 'chat', content: '失败的问题', referenceImages, failed: true },
+    { role: 'error', mode: 'chat', content: '暂时不可用' },
+    { role: 'user', mode: 'chat', content: '背景什么颜色？' },
+  ])
+  assert.equal(messages.length, 4)
+  assert.deepEqual(messages[1].content, [
+    { type: 'text', text: '图中是什么？' },
+    { type: 'image_url', image_url: { url: referenceDataUrl, detail: 'auto' } },
+  ])
+  assert.equal(messages[3].content, '背景什么颜色？')
+  let calls = 0
+  const reply = await requestChat({ ...chatRequest, messages, fetchImpl: async (url, options) => {
+    calls++
+    assert.equal(url, 'https://proxy.example/v1/chat/completions')
+    assert.deepEqual(JSON.parse(options.body).messages, messages)
+    assert.doesNotMatch(options.body, /private-filename|失败的问题|画一个红色圆形|imageUrl|referenceImages/)
+    return json({ choices: [{ message: { content: '米白色背景。' } }] })
+  } })
+  assert.equal(calls, 1)
+  assert.equal(reply, '米白色背景。')
+})
+
+test('chat context limits are explicit and do not silently remove previous images', () => {
+  const turn = { role: 'user', mode: 'chat', content: '描述图片', referenceImages: [{ dataUrl: referenceDataUrl }] }
+  assert.equal(buildChatMessages(Array(12).fill(turn)).length, 13)
+  assert.throws(() => buildChatMessages(Array(13).fill(turn)), { code: 'context_limit' })
+  assert.throws(() => buildChatMessages([{ ...turn, referenceImages: Array(4).fill({ dataUrl: referenceDataUrl }) }]), { code: 'invalid_request' })
+  assert.throws(() => buildChatMessages([{ ...turn, referenceImages: [{ dataUrl: 'data:image/png;base64,' + 'A'.repeat(1024 * 1024) }] }]), { code: 'invalid_request' })
+  assert.throws(() => buildChatMessages(Array(50).fill({ role: 'user', content: 'hi' })), { code: 'context_limit' })
+  assert.throws(() => buildChatMessages(Array(4).fill({ role: 'user', content: '字'.repeat(16000) })), { code: 'context_limit' })
+})
+
+test('unsupported vision mapping returns an actionable error instead of a generic HTTP code', async () => {
+  await assert.rejects(requestChat({ ...chatRequest, fetchImpl: async () => json({ error: {
+    code: 'vision_model_unsupported', message: '当前模型暂不支持看图，请切换到导管佛祖模型。',
+  } }, 400) }), { code: 'vision_model_unsupported', status: 400, message: '当前模型暂不支持看图，请切换到导管佛祖模型。' })
+})
 
 test('reference generation uploads multipart files in order before submitting URL references', async () => {
   const calls = []
