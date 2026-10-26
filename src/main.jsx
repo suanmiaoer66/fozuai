@@ -3,6 +3,7 @@ import { buildChatMessages, getApiConfig, requestChat, requestImage } from './ap
 import ImageCard from './ImageCard.jsx'
 import ReferenceImages from './ReferenceImages.jsx'
 import { MAX_REFERENCE_IMAGES, isReferenceImageFile, prepareReferenceImage } from './referenceImages.js'
+import { documentFromChat } from './workspace/seedDocument.js'
 import logoUrl from '../logo.ico'
 import { ArrowLeft } from 'reicon-react/icons/ArrowLeft'
 import { ArrowRight } from 'reicon-react/icons/ArrowRight'
@@ -345,9 +346,7 @@ function App() {
   }
 
   const transferToDocument = (message) => {
-    const heading = message.content.match(/^#{1,2}\s+(.+)$/m)?.[1]
-    const firstLine = message.content.split('\n').find((line) => line.trim()) || '对话文档'
-    setWorkspaceSeed({ id: globalThis.crypto?.randomUUID?.() || `draft-${Date.now()}`, title: (heading || firstLine.replace(/^[*#>\s]+/, '')).slice(0, 40), content: message.content, assets: [] })
+    setWorkspaceSeed({ id: globalThis.crypto?.randomUUID?.() || `draft-${Date.now()}`, ...documentFromChat(message.content) })
     openWorkspace()
   }
   const consumeWorkspaceSeed = useCallback(() => setWorkspaceSeed(null), [])
