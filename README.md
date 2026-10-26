@@ -44,7 +44,7 @@ npm run dev
 - 可导出 PDF、Word（`.docx`）、Markdown（`.md`）和纯文本（`.txt`），设置文件名与 A4 / Letter 纸张。PDF 是嵌入中文字体、可选中文字的真实 PDF；Word 保持可编辑标题、列表、表格和图片。Markdown 内嵌本机图片，TXT 保留文字与图片说明。
 - 草稿使用当前浏览器的 IndexedDB，按文档自动保存，刷新后可在「我的文档」继续打开。保存失败会提示备份与重试，原内容仍留在页面；清除浏览器网站数据会移除本机草稿，手机与电脑暂不互相同步。删除文档前会再次确认。
 
-PDF/Word 导出库按需加载，不增加普通聊天的首次加载负担。PDF 第一次导出会加载本站提供的 Noto Sans SC 字体；字形会按文档内容嵌入 PDF。字体来源与许可证见 [public/fonts/README.md](public/fonts/README.md)。无需新增 API Key、GitHub Variables 或云存储服务。
+PDF/Word 导出库按需加载，不增加普通聊天的首次加载负担。PDF 首次导出按文档字符选择本站的 Noto Sans SC 字体：常用中文约 1.5 MB，包含罕见字时自动使用约 6.1 MB 的完整字体，保留全部字符覆盖。成功下载的字体会在当前标签页复用；首次导出遇到慢速网络时请稍等，最多等待两分钟，失败可重新导出。字形按实际内容嵌入 PDF，下载文件通常远小于字体本身。字体来源、许可证和可复现构建方法见 [public/fonts/README.md](public/fonts/README.md)。无需新增 API Key、GitHub Variables 或云存储服务。
 
 开发检查：`npm test`、`npm run build`；人工验收步骤见 [test/README.md](test/README.md)。长文档、复杂排版和跨设备同步可在后续阶段扩展；本期未接入 Office 文件导入、Excel 或 PPT 导出。
 

@@ -1,0 +1,23 @@
+{
+  "source": "https://github.com/notofonts/noto-cjk/blob/main/Sans/SubsetOTF/SC/NotoSansSC-Regular.otf",
+  "source_sha256": "faa6c9df652116dde789d351359f3d7e5d2285a2b2a1f04a2d7244df706d5ea9",
+  "toolchain": {
+    "fonttools": "4.67.0",
+    "brotli": "1.2.1"
+  },
+  "common_selection": "GB2312 plus supported Unicode U+0000–U+303F and U+FF00–U+FFEF",
+  "fonts": {
+    "NotoSansSC-Common.woff2": {
+      "bytes": 1499544,
+      "sha256": "10c59526505b21556467beaac7ff6d7a45a55ef3259817ace7d0a67d4d7496ad",
+      "unicode_codepoints": 8741,
+      "glyphs": 8733
+    },
+    "NotoSansSC-Regular.woff2": {
+      "bytes": 6072884,
+      "sha256": "39f19dcb9a64e1204b3298b888e4e01d9d96fcc6da2efec14fe1da1f1debc957",
+      "unicode_codepoints": 30890,
+      "glyphs": 31036
+    }
+  }
+}

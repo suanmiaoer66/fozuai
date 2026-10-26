@@ -24,4 +24,4 @@
 6. 本地未配置 API 时测试失败路径，确认指令和正文保留。存储失败与重试通过 `documentStore.test.js` 的 IndexedDB 测试覆盖；`requestDocument` 的长文分块和截断输出通过 API/Worker 测试覆盖。
 7. 测试「对话转文档 → 编辑 → 导出」完整流程，确认返回对话后已有消息仍在。不要在验收中删除用户原有草稿，仅使用明确命名的测试文档。
 
-导出排版 QA 应使用 Codex 捆绑的 LibreOffice 与 Poppler。中文字体可通过临时 Fontconfig 配置将 `public/fonts` 提供给渲染进程，不需要修改系统字体或安装桌面办公软件。生成的 QA 文档及渲染图保存在临时目录，不提交到仓库。
+导出排版 QA 应使用 Codex 捆绑的 LibreOffice 与 Poppler。网站发布的是 WOFF2 字体；Word 渲染检查时，按 [字体来源说明](../public/fonts/README.md) 将上游 `NotoSansSC-Regular.otf` 保存到临时目录，再用临时 Fontconfig 配置与 `SAL_FONTPATH` 将该目录提供给渲染进程，不需要修改系统字体或安装桌面办公软件。生成的 QA 文档及渲染图保存在临时目录，不提交到仓库。

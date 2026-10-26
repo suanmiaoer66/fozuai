@@ -1,11 +1,22 @@
 import { documentHasTitle, inlinePlainText, parseDocumentMarkdown, safeDocumentLink } from './markdown.js';
+import commonFontCharacters from './commonFontCharacters.json' with { type: 'json' };
 
 const MAX_CONTENT_LENGTH = 48_000;
 const MAX_ASSETS = 6;
 const MAX_IMAGE_DATA_LENGTH = 1024 * 1024;
-const PDF_FONT = 'NotoSansSC-Regular.otf';
+const PDF_COMMON_FONT = 'NotoSansSC-Common.woff2';
+const PDF_FULL_FONT = 'NotoSansSC-Regular.woff2';
+const commonCharacters = new Set(commonFontCharacters);
 const PAGE_POINTS = { A4: [595.28, 841.89], LETTER: [612, 792] };
 let pdfLibraryPromise;
+const pdfFontPromises = new Map();
+
+function withTimeout(promise, milliseconds, message) {
+  let timer;
+  return Promise.race([promise, new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), milliseconds);
+  })]).finally(() => clearTimeout(timer));
+}
 
 function cleanFilename(title, extension) {
   const stem = String(title || '未命名文档').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-').replace(/[. ]+$/g, '').trim().slice(0, 80);
@@ -162,40 +173,65 @@ function pdfBlocks(tokens, assets, width, height, depth = 0) {
   return grouped.length ? grouped : [{ text: ' ' }];
 }
 
-async function loadPdfLibrary() {
-  if (!pdfLibraryPromise) pdfLibraryPromise = (async () => {
+async function loadPdfLibrary(document) {
+  const commonOnly = Array.from(`${document.title}\n${document.content}`).every((character) => /\s/.test(character) || commonCharacters.has(character));
+  const fontFile = commonOnly ? PDF_COMMON_FONT : PDF_FULL_FONT;
+  const fontFamily = commonOnly ? 'NotoSCCommon' : 'NotoSC';
+  if (!pdfLibraryPromise) pdfLibraryPromise = withTimeout(
+    import('pdfmake/build/pdfmake.js').then((module) => module.default)
+      .catch(() => { throw new Error('PDF 组件加载失败，请刷新网页后重试。'); }),
+    120_000, 'PDF 组件加载超时，当前网络较慢，请刷新网页后重试。',
+  ).catch((error) => { pdfLibraryPromise = undefined; throw error; });
+  if (!pdfFontPromises.has(fontFile)) pdfFontPromises.set(fontFile, (async () => {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 45_000);
+    const timeout = setTimeout(() => controller.abort(), 120_000);
     try {
-      const [{ default: pdfMake }, fontResponse] = await Promise.all([
-        import('pdfmake/build/pdfmake.js'),
-        fetch(`${import.meta.env?.BASE_URL || '/'}fonts/${PDF_FONT}`, { signal: controller.signal }),
+      const [pdfMake, font] = await Promise.all([
+        pdfLibraryPromise,
+        (async () => {
+          try {
+            const response = await fetch(`${import.meta.env?.BASE_URL || '/'}fonts/${fontFile}`, { signal: controller.signal });
+            if (!response.ok) throw new Error('font-unavailable');
+            const bytes = new Uint8Array(await response.arrayBuffer());
+            if (bytes.length < 48 || String.fromCharCode(...bytes.subarray(0, 4)) !== 'wOF2'
+              || new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(8) !== bytes.length) {
+              throw new Error('font-unavailable');
+            }
+            return bytes;
+          } catch {
+            throw new Error(controller.signal.aborted
+              ? '中文字体加载超时，当前网络较慢，请稍后重新导出 PDF。'
+              : '中文字体下载失败，请检查网络后重新导出 PDF。');
+          }
+        })(),
       ]);
-      if (!fontResponse.ok) throw new Error('font-unavailable');
-      const font = new Uint8Array(await fontResponse.arrayBuffer());
-      pdfMake.addVirtualFileSystem({ [PDF_FONT]: bytesBase64(font) });
-      pdfMake.addFonts({ NotoSC: { normal: PDF_FONT, bold: PDF_FONT, italics: PDF_FONT, bolditalics: PDF_FONT } });
-      return pdfMake;
-    } catch {
-      throw new Error('PDF 组件或中文字体加载失败，请检查网络后重新导出。');
+      pdfMake.addVirtualFileSystem({ [fontFile]: bytesBase64(font) });
+      pdfMake.addFonts({ [fontFamily]: { normal: fontFile, bold: fontFile, italics: fontFile, bolditalics: fontFile } });
+      return { pdfMake, fontFamily, fontFile };
     } finally {
       clearTimeout(timeout);
+      controller.abort();
     }
-  })().catch((error) => { pdfLibraryPromise = undefined; throw error; });
-  return pdfLibraryPromise;
+  })().catch((error) => { pdfFontPromises.delete(fontFile); throw error; }));
+  return pdfFontPromises.get(fontFile);
 }
 
 async function createPdf(document, tokens, assets) {
-  const pdfMake = await loadPdfLibrary();
+  const { pdfMake, fontFamily, fontFile } = await loadPdfLibrary(document);
   const [pageWidth, pageHeight] = PAGE_POINTS[document.pageSize];
-  return pdfMake.createPdf({
+  try {
+    return await pdfMake.createPdf({
     pageSize: document.pageSize, pageMargins: [48, 48, 48, 48],
     info: { title: document.title, creator: '佛祖 AI 智能助手' },
-    defaultStyle: { font: 'NotoSC', fontSize: 10.5, lineHeight: 1.45, color: '#202632' },
+    defaultStyle: { font: fontFamily, fontSize: 10.5, lineHeight: 1.45, color: '#202632' },
     content: pdfBlocks(tokens, assets, pageWidth - 96, pageHeight - 96),
     footer: (current, total) => ({ id: 'fozu-page-footer', text: `${current} / ${total}`, fontSize: 8, color: '#747b85', alignment: 'center', margin: [0, 14, 0, 0] }),
     pageBreakBefore: (currentNode, container) => currentNode.headlineLevel && !container.getFollowingNodesOnPage().some((node) => node.id !== 'fozu-page-footer'),
-  }).getBlob();
+    }).getBlob();
+  } catch {
+    pdfFontPromises.delete(fontFile);
+    throw new Error('PDF 生成失败，请重新导出；若仍失败，请检查图片或减少文档内容。');
+  }
 }
 
 async function createDocx(document, tokens, assets) {

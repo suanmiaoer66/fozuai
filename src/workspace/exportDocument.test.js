@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { inflateRawSync } from 'node:zlib';
+import { inflateRawSync, inflateSync } from 'node:zlib';
 import { createDocumentExport } from './exportDocument.js';
 import { documentHasTitle, inlinePlainText, parseDocumentMarkdown, safeDocumentLink } from './markdown.js';
 
@@ -74,11 +74,20 @@ test('Word output contains editable Chinese text, embedded image, table header a
 
 test('PDF is a real multipage document with embedded Chinese font, Unicode mapping and image', async () => {
   const nativeFetch = globalThis.fetch;
+  const requestedFonts = [];
+  let corruptFirstResponse = true;
   globalThis.fetch = async (url) => {
-    assert.equal(url, '/fonts/NotoSansSC-Regular.otf');
-    return new Response(await readFile(new URL('../../public/fonts/NotoSansSC-Regular.otf', import.meta.url)));
+    requestedFonts.push(url);
+    assert.ok(['/fonts/NotoSansSC-Common.woff2', '/fonts/NotoSansSC-Regular.woff2'].includes(url));
+    if (corruptFirstResponse) {
+      corruptFirstResponse = false;
+      return new Response('<html>temporary upstream error</html>');
+    }
+    return new Response(await readFile(new URL(`../../public${url}`, import.meta.url)));
   };
   try {
+    await assert.rejects(createDocumentExport(document, 'pdf'), /中文字体下载失败/);
+    requestedFonts.length = 0;
     const rows = Array.from({ length: 70 }, (_, index) => `| 第 ${index + 1} 项 | 核对中文资料、整理文档并完成验收 |`).join('\n');
     const output = await createDocumentExport({ ...document, content: `${sample}\n\n## 长表格\n\n| 序号 | 内容 |\n|---|---|\n${rows}` }, 'pdf');
     const bytes = Buffer.from(await output.blob.arrayBuffer());
@@ -91,6 +100,16 @@ test('PDF is a real multipage document with embedded Chinese font, Unicode mappi
     assert.ok(raw.includes('/ToUnicode'));
     assert.ok(raw.includes('/Subtype /Image'));
     assert.match(raw, /\/MediaBox \[0 0 595\.28 841\.89\]/);
+    assert.deepEqual(requestedFonts, ['/fonts/NotoSansSC-Common.woff2']);
+    const rare = await createDocumentExport({ title: '罕见字', content: '# 罕见字\n\n龘', assets: [] }, 'pdf');
+    const rareRaw = Buffer.from(await rare.blob.arrayBuffer()).toString('latin1');
+    const streams = [...rareRaw.matchAll(/stream\r?\n([\s\S]*?)\r?\nendstream/g)].map((match) => {
+      try { return inflateSync(Buffer.from(match[1], 'latin1')).toString(); } catch { return ''; }
+    });
+    assert.ok(streams.some((stream) => /<9f98>/i.test(stream)), 'rare character 龘 retains its PDF Unicode mapping');
+    assert.deepEqual(requestedFonts, ['/fonts/NotoSansSC-Common.woff2', '/fonts/NotoSansSC-Regular.woff2']);
+    await createDocumentExport({ ...document, content: '# 春季活动方案\n\n再次导出' }, 'pdf');
+    assert.equal(requestedFonts.length, 2, 'completed font downloads are reused');
   } finally {
     globalThis.fetch = nativeFetch;
   }
