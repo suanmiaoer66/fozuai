@@ -34,6 +34,20 @@ npm run dev
 
 图片下载通过 Worker 的 `GET /v1/tasks/{task_id}/image` 完成，使用任务 ID 查询原图，避免跨站图片无法直接保存。支持 PNG、JPEG、WebP、GIF、AVIF，单文件上限 32 MiB；下载接口不接受任意图片 URL，且不会向图片 CDN 发送 API Key。
 
+## 文档工作区
+
+点击侧栏「工作台」或首页的「工作」，可新建空白文档，也可从工作周报、项目方案、会议纪要结构开始。普通聊天回答下方的「转为文档」会复制该条回答进入工作区，不清空原对话。
+
+- 标题可直接改名，正文采用 Markdown 编辑，工具栏提供标题、加粗、列表、表格、图片和撤销 AI 修改。右侧实时预览内容；手机使用「编辑 / 预览」切换。预览是连续内容，PDF/Word 导出时按选定纸张自动分页。
+- 「让 AI 帮你写」沿用现有 DeepSeek 代理与所选模型，支持起草、整篇修改和选中文字修改。先展示候选内容，点击「应用修改」后才替换正文；可以撤销最近一次 AI 修改。如果生成期间手动改了正文，旧建议不能覆盖新编辑。失败、超时、取消或输出截断都保留原稿。
+- 每份文档支持 48,000 字符、6 张本地 PNG/JPEG/WebP 图片，图片复用现有校验压缩流程。预览与导出仅使用本机插入的图片；粘贴的外部图片链接会显示占位提示，不自动联网下载图片。
+- 可导出 PDF、Word（`.docx`）、Markdown（`.md`）和纯文本（`.txt`），设置文件名与 A4 / Letter 纸张。PDF 是嵌入中文字体、可选中文字的真实 PDF；Word 保持可编辑标题、列表、表格和图片。Markdown 内嵌本机图片，TXT 保留文字与图片说明。
+- 草稿使用当前浏览器的 IndexedDB，按文档自动保存，刷新后可在「我的文档」继续打开。保存失败会提示备份与重试，原内容仍留在页面；清除浏览器网站数据会移除本机草稿，手机与电脑暂不互相同步。删除文档前会再次确认。
+
+PDF/Word 导出库按需加载，不增加普通聊天的首次加载负担。PDF 第一次导出会加载本站提供的 Noto Sans SC 字体；字形会按文档内容嵌入 PDF。字体来源与许可证见 [public/fonts/README.md](public/fonts/README.md)。无需新增 API Key、GitHub Variables 或云存储服务。
+
+开发检查：`npm test`、`npm run build`；人工验收步骤见 [test/README.md](test/README.md)。长文档、复杂排版和跨设备同步可在后续阶段扩展；本期未接入 Office 文件导入、Excel 或 PPT 导出。
+
 ## 线上架构
 
 GitHub Pages 发布 [fozu.zoreai.cn](https://fozu.zoreai.cn) 的静态前端；[fozu-api.zoreai.cn](https://fozu-api.zoreai.cn) 通过 Cloudflare Pages 网关访问 Worker。Worker 保存 API Key，并代理 DeepSeek 对话和 APIMart 生图请求，无需网站访问口令：

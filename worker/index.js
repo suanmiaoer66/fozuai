@@ -301,7 +301,8 @@ function invalidResponse() {
 function chatResult(data, env) {
   const content = data?.choices?.[0]?.message?.content
   if (typeof content !== 'string' || !content.trim()) invalidResponse()
-  return { choices: [{ message: { role: 'assistant', content: redact(content, env) } }] }
+  const reason = data?.choices?.[0]?.finish_reason
+  return { choices: [{ message: { role: 'assistant', content: redact(content, env) }, ...(['stop', 'length', 'content_filter'].includes(reason) ? { finish_reason: reason } : {}) }] }
 }
 
 function imageSubmission(data, env) {

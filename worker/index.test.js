@@ -31,6 +31,16 @@ function request(path, { method = 'POST', body, key, origin = env.ALLOWED_ORIGIN
 const jsonResponse = (value, status = 200, headers = {}) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json', ...headers } })
 const read = async (response) => response.json()
 
+test('chat preserves only safe completion status so document exports can reject truncated drafts', async () => {
+  for (const reason of ['stop', 'length', 'content_filter', 'untrusted-secret-reason']) {
+    const response = await handleRequest(request('/chat/completions', {
+      body: { model: '导管佛祖模型', messages: [{ role: 'user', content: '生成文档' }] },
+    }), env, async () => jsonResponse({ choices: [{ finish_reason: reason, message: { content: '报告内容' } }] }))
+    assert.equal(response.status, 200)
+    assert.equal((await response.json()).choices[0].finish_reason, reason === 'untrusted-secret-reason' ? undefined : reason)
+  }
+})
+
 test('chat success maps Chinese model alias and removes upstream extras', async () => {
   let call
   const response = await handleRequest(request('/v1/chat/completions', {

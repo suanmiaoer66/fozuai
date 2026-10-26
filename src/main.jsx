@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { buildChatMessages, getApiConfig, requestChat, requestImage } from './api.js'
 import ImageCard from './ImageCard.jsx'
 import ReferenceImages from './ReferenceImages.jsx'
@@ -27,6 +27,7 @@ import { Send } from 'reicon-react/icons/Send'
 import './styles.css'
 
 const iconProps = { size: 18, weight: 'Outline', strokeWidth: 1.8 }
+const Workspace = lazy(() => import('./workspace/Workspace.jsx'))
 
 const navItems = [
   { label: '新对话', icon: Edit, primary: true },
@@ -59,6 +60,10 @@ const initialConnection = {
 
 function App() {
   const [activeNav, setActiveNav] = useState('新对话')
+  const [workspaceOpened, setWorkspaceOpened] = useState(false)
+  const [workspaceSeed, setWorkspaceSeed] = useState(null)
+  const [documentCount, setDocumentCount] = useState(0)
+  const workspaceVisible = activeNav === '工作台'
   const [input, setInput] = useState('')
   const [messages, setMessages] = useState([])
   const [isThinking, setIsThinking] = useState(false)
@@ -201,6 +206,7 @@ function App() {
   }
 
   useLayoutEffect(() => {
+    if (workspaceVisible) return
     const conversation = conversationRef.current
     if (!hasMessages) {
       conversation.scrollTop = 0
@@ -208,10 +214,10 @@ function App() {
     } else if (followLatest.current) {
       conversation.scrollTop = conversation.scrollHeight
     }
-  }, [messages, isThinking, hasMessages])
+  }, [messages, isThinking, hasMessages, workspaceVisible])
 
   useEffect(() => {
-    if (!hasMessages) return
+    if (!hasMessages || workspaceVisible) return
     const conversation = conversationRef.current
     // Keep the latest reply visible when an image loads or the input area resizes.
     // Reading older messages pauses this behavior until the user scrolls back down.
@@ -221,7 +227,7 @@ function App() {
     observer.observe(conversation)
     observer.observe(messageThreadRef.current)
     return () => observer.disconnect()
-  }, [hasMessages])
+  }, [hasMessages, workspaceVisible])
 
   const handleConversationScroll = () => {
     const conversation = conversationRef.current
@@ -331,6 +337,22 @@ function App() {
     setGenerationMode('chat')
   }
 
+  const openWorkspace = () => {
+    setWorkspaceOpened(true)
+    setActiveNav('工作台')
+    setSidebarOpen(false)
+    setModelOpen(false)
+  }
+
+  const transferToDocument = (message) => {
+    const heading = message.content.match(/^#{1,2}\s+(.+)$/m)?.[1]
+    const firstLine = message.content.split('\n').find((line) => line.trim()) || '对话文档'
+    setWorkspaceSeed({ id: globalThis.crypto?.randomUUID?.() || `draft-${Date.now()}`, title: (heading || firstLine.replace(/^[*#>\s]+/, '')).slice(0, 40), content: message.content, assets: [] })
+    openWorkspace()
+  }
+  const consumeWorkspaceSeed = useCallback(() => setWorkspaceSeed(null), [])
+  const backToChat = useCallback(() => { setActiveNav('新对话'); setSidebarOpen(false) }, [])
+
   return (
     <div className="app-shell">
       <aside className={`sidebar ${sidebarOpen ? 'is-open' : ''}`}>
@@ -352,10 +374,10 @@ function App() {
         <div className="sidebar-scroll">
         <div className="nav-list">
           {navItems.map(({ label, icon: Icon, primary }) => (
-            <button key={label} className={`nav-item ${activeNav === label ? 'active' : ''} ${primary ? 'nav-primary' : ''}`} onClick={() => { setActiveNav(label); if (primary) startNewChat() }}>
+            <button key={label} className={`nav-item ${activeNav === label ? 'active' : ''} ${primary ? 'nav-primary' : ''}`} onClick={() => { if (label === '工作台') openWorkspace(); else { setActiveNav(label); if (primary) startNewChat() } }}>
               <Icon {...iconProps} />
               <span>{label}</span>
-              {label === '工作台' && <span className="nav-count">3</span>}
+              {label === '工作台' && documentCount > 0 && <span className="nav-count">{documentCount}</span>}
             </button>
           ))}
         </div>
@@ -378,20 +400,21 @@ function App() {
         </div>
       </aside>
 
-      <main className="main-content">
+      <main className={`main-content ${workspaceVisible ? 'workspace-active' : ''}`}>
         <header className="topbar">
-          <div className="topbar-left"><button className="icon-button mobile-menu" onClick={() => setSidebarOpen(true)} aria-label="打开侧栏"><More size={20} /></button><button className="icon-button desktop-arrow" aria-label="返回"><ArrowLeft size={18} /></button><button className="icon-button desktop-arrow" aria-label="前进"><ArrowRight size={18} /></button><div className="crumb-divider" /><span className="page-label">新对话</span></div>
+          <div className="topbar-left"><button className="icon-button mobile-menu" onClick={() => setSidebarOpen(true)} aria-label="打开侧栏"><More size={20} /></button><button className="icon-button desktop-arrow" aria-label="返回对话" onClick={backToChat}><ArrowLeft size={18} /></button><button className="icon-button desktop-arrow" aria-label="前进"><ArrowRight size={18} /></button><div className="crumb-divider" /><span className="page-label">{workspaceVisible ? '文档工作台' : '新对话'}</span></div>
           <div className="topbar-right"><div className="model-pill"><span className={`model-dot status-${connection.chat}`} /> {model}<ChevronDown size={14} /></div><button className="icon-button" aria-label="搜索"><Search3 {...iconProps} /></button><button className="user-avatar" aria-label="个人资料">林</button></div>
         </header>
 
-        <section ref={conversationRef} onScroll={handleConversationScroll} className={`conversation ${hasMessages ? 'has-messages' : ''}`} aria-label="聊天记录" tabIndex={0}>
+        {workspaceOpened && <div className="workspace-host" hidden={!workspaceVisible}><Suspense fallback={<div className="workspace-loading" role="status">正在打开文档工作台…</div>}><Workspace active={workspaceVisible} config={apiConfig} model={model} seed={workspaceSeed} onSeedConsumed={consumeWorkspaceSeed} onCountChange={setDocumentCount} onBackToChat={backToChat} /></Suspense></div>}
+        <section hidden={workspaceVisible} ref={conversationRef} onScroll={handleConversationScroll} className={`conversation ${hasMessages ? 'has-messages' : ''}`} aria-label="聊天记录" tabIndex={0}>
           {messages.length === 0 ? (
             <div className="welcome-panel">
               <div className="welcome-orb"><div className="orb-core"><img src={logoUrl} alt="" /></div><span className="orb-ring ring-one" /><span className="orb-ring ring-two" /></div>
               <p className="eyebrow">DEEPSEEK POWERED</p>
               <h1>{greeting}</h1>
               <p className="welcome-copy">我是你的思考搭子，可以帮你写作、分析、学习，也可以只是陪你聊聊。</p>
-              <div className="mode-switch" role="tablist" aria-label="工作模式"><button className="mode active" role="tab">对话</button><button className="mode" role="tab">工作</button></div>
+              <div className="mode-switch" role="tablist" aria-label="工作模式"><button className="mode active" role="tab" aria-selected="true">对话</button><button className="mode" role="tab" aria-selected="false" onClick={openWorkspace}>工作</button></div>
               <div className="prompt-grid">
                 {promptCards.map(({ icon: Icon, title, copy }) => <button className="prompt-card" key={title} onClick={() => { if (pendingRequest.current || referenceProcessingRef.current) return; if (title === '生成一张图片') activateImageMode(); else if (generationMode === 'image') { exitImageMode(); setInput(title) } else sendMessage(title) }}><span className="prompt-icon"><Icon size={18} weight="Outline" /></span><span className="prompt-text"><b>{title}</b><small>{copy}</small></span><ArrowRight className="prompt-arrow" size={16} /></button>)}
               </div>
@@ -399,13 +422,13 @@ function App() {
           ) : (
             <div ref={messageThreadRef} className="message-thread">
               <div className="thread-intro"><span className="mini-mark"><img src={logoUrl} alt="" /></span><span>佛祖 AI · {model}</span></div>
-              {messages.map((message, index) => <div className={`message-block ${message.role} ${message.imageUrl ? 'has-image' : ''}`} key={`${message.role}-${index}`}><div className="message-avatar">{message.role === 'user' ? '林' : <img src={logoUrl} alt="" />}</div><div className="message-body"><div className="message-author">{message.role === 'user' ? '你' : '佛祖 AI'}</div><p>{message.content}</p>{message.referenceImages?.length > 0 && <ReferenceImages images={message.referenceImages} mode={message.mode} />}{message.imageUrl && <ImageCard message={message} config={apiConfig} />}</div></div>)}
+              {messages.map((message, index) => <div className={`message-block ${message.role} ${message.imageUrl ? 'has-image' : ''}`} key={`${message.role}-${index}`}><div className="message-avatar">{message.role === 'user' ? '林' : <img src={logoUrl} alt="" />}</div><div className="message-body"><div className="message-author">{message.role === 'user' ? '你' : '佛祖 AI'}</div><p>{message.content}</p>{message.referenceImages?.length > 0 && <ReferenceImages images={message.referenceImages} mode={message.mode} />}{message.imageUrl && <ImageCard message={message} config={apiConfig} />}{message.role === 'assistant' && message.mode !== 'image' && <button className="message-to-document" onClick={() => transferToDocument(message)}><Document size={14} />转为文档</button>}</div></div>)}
               {isThinking && <div className="message-block assistant"><div className="message-avatar"><img src={logoUrl} alt="" /></div><div className="message-body"><div className="message-author">佛祖 AI</div><div className="thinking-wrap"><div className="thinking"><span /><span /><span /></div><span className="thinking-label" role="status">{requestProgress || '正在思考…'}</span></div></div></div>}
             </div>
           )}
         </section>
 
-        <div className="composer-wrap">
+        <div className="composer-wrap" hidden={workspaceVisible}>
           <div className={`composer-shell ${generationMode === 'image' ? 'image-composer' : ''} ${referenceImages.length || referenceProcessing ? 'has-attachments' : ''} ${isDragging ? 'is-dragging' : ''}`}
             onPaste={handlePaste} onDragEnter={handleDragEnter} onDragLeave={handleDragLeave}
             onDragOver={(event) => { if (isFileDrag(event)) { event.preventDefault(); event.dataTransfer.dropEffect = isThinking || referenceProcessing ? 'none' : 'copy' } }} onDrop={handleDrop}>

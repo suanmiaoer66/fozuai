@@ -1,10 +1,46 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { getApiConfig, buildChatMessages, requestChat, requestImage, downloadImage } from './api.js'
+import { getApiConfig, buildChatMessages, buildDocumentMessages, requestDocument, requestChat, requestImage, downloadImage } from './api.js'
 
 const config = getApiConfig({ VITE_DEEPSEEK_API_PROXY_URL: 'https://proxy.example/v1/', VITE_IMAGE_API_PROXY_URL: 'https://proxy.example/v1/' })
 const json = (data, status = 200) => new Response(JSON.stringify(data), { status })
 const chatRequest = { config, model: '导管佛祖模型', messages: [{ role: 'user', content: '你好' }] }
+
+test('document writing preserves long source without exceeding existing proxy message limits', () => {
+  const content = ('原文😀，包含中文和标题。\n').repeat(2500).slice(0, 48000)
+  const messages = buildDocumentMessages({ instruction: '整理成正式报告，保留所有事实。', document: { title: '验收报告', content } })
+  assert.ok(messages.every((message) => message.content.length <= 16000))
+  assert.ok(messages.reduce((total, message) => total + message.content.length, 0) <= 64000)
+  assert.equal(messages.slice(1, -1).map((message) => message.content.replace(/^原始内容（\d+\/\d+）：\n/, '')).join(''), content)
+  assert.ok(messages.slice(1, -1).every((message) => !/[\uD800-\uDBFF]$/.test(message.content)))
+  assert.match(messages.at(-1).content, /整理成正式报告/)
+})
+
+test('selected document rewrite sends only the selection and preserves asset references as text', async () => {
+  const selection = { start: 1, end: 10, text: '请保留图片\n![示例](asset:local-1)' }
+  const result = await requestDocument({ config, model: '导管佛祖模型', instruction: '精简这段文字', document: { title: '测试文档', content: '未选中的敏感段落' }, selection, fetchImpl: async (url, options) => {
+    assert.equal(url, 'https://proxy.example/v1/chat/completions')
+    const payload = JSON.parse(options.body)
+    assert.equal(payload.model, '导管佛祖模型')
+    assert.match(payload.messages[0].content, /只修改选中的片段/)
+    assert.match(options.body, /asset:local-1/)
+    assert.doesNotMatch(options.body, /未选中的敏感段落/)
+    return json({ choices: [{ message: { content: '```markdown\n保留图片\n![示例](asset:local-1)\n```' } }] })
+  } })
+  assert.equal(result, '保留图片\n![示例](asset:local-1)')
+})
+
+test('document input and result limits reject before overwriting a draft', async () => {
+  const input = { config, model: '导管佛祖模型', instruction: '生成报告', document: { content: '' } }
+  const neverFetch = () => assert.fail('invalid input must not call API')
+  for (const change of [{ instruction: '' }, { instruction: 'x'.repeat(4001) }, { document: { content: 'x'.repeat(48001) } }, { selection: { text: '' } }]) {
+    await assert.rejects(requestDocument({ ...input, ...change, fetchImpl: neverFetch }), { code: 'invalid_request' })
+  }
+  await assert.rejects(requestDocument({ ...input, fetchImpl: async () => json({ choices: [{ message: { content: 'x'.repeat(48001) } }] }) }), { code: 'invalid_response' })
+  for (const reason of ['length', 'content_filter']) {
+    await assert.rejects(requestDocument({ ...input, fetchImpl: async () => json({ choices: [{ message: { content: '尚未完成的内容' }, finish_reason: reason }] }) }), { code: 'incomplete_response' })
+  }
+})
 
 test('chat calls a configured proxy without an access code or browser API key', async () => {
   const reply = await requestChat({ ...chatRequest, fetchImpl: async (url, options) => {
