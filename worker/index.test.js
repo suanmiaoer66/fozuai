@@ -421,3 +421,83 @@ test('image download timeout covers both response headers and a stalled body', a
     if (stalledBody) assert.equal(cancelled, true)
   }
 })
+
+const referencePng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6ZQAAAABJRU5ErkJggg==', 'base64')
+function uploadRequest(files = [{ bytes: referencePng, type: 'image/png' }]) {
+  const form = new FormData()
+  for (const file of files) form.append('file', new Blob([file.bytes], { type: file.type }), 'private-filename.png')
+  return new Request('https://fozuai-api.example/v1/uploads/images', { method: 'POST', headers: { Origin: env.ALLOWED_ORIGIN }, body: form })
+}
+
+test('reference upload forwards a validated multipart image with server credentials and a neutral filename', async () => {
+  let calls = 0
+  const response = await handleRequest(uploadRequest(), env, async (url, options) => {
+    calls++
+    assert.equal(url, 'https://api.apimart.ai/v1/uploads/images')
+    assert.equal(options.headers.Authorization, 'Bearer apimart-secret')
+    assert.equal(options.headers['Content-Type'], undefined)
+    assert.equal(options.redirect, 'manual')
+    assert.ok(options.body instanceof FormData)
+    const file = options.body.get('file')
+    assert.equal(file.name, 'reference.png')
+    assert.equal(file.type, 'image/png')
+    assert.deepEqual(Buffer.from(await file.arrayBuffer()), referencePng)
+    return jsonResponse({ url: 'https://upload.apimart.ai/f/reference.png', filename: 'private-filename.png', extra: 'apimart-secret' })
+  })
+  assert.equal(calls, 1)
+  assert.equal(response.status, 200)
+  assert.equal(response.headers.get('Access-Control-Allow-Origin'), env.ALLOWED_ORIGIN)
+  assert.deepEqual(await read(response), { url: 'https://upload.apimart.ai/f/reference.png' })
+})
+
+test('reference uploads reject incorrect format, empty files, duplicates and oversized files before calling upstream', async () => {
+  const cases = [
+    [[], 400],
+    [[{ bytes: '', type: 'image/png' }], 400],
+    [[{ bytes: referencePng, type: 'image/jpeg' }], 400],
+    [[{ bytes: '<svg />', type: 'image/svg+xml' }], 415],
+    [[{ bytes: referencePng, type: 'image/png' }, { bytes: referencePng, type: 'image/png' }], 400],
+    [[{ bytes: new Uint8Array(1024 * 1024 + 1), type: 'image/png' }], 413],
+  ]
+  for (const [files, status] of cases) {
+    const response = await handleRequest(uploadRequest(files), env, () => assert.fail('must reject before upstream'))
+    assert.equal(response.status, status)
+  }
+  const malformed = new Request('https://fozuai-api.example/v1/uploads/images', { method: 'POST', headers: { 'Content-Type': 'multipart/form-data; boundary=bad' }, body: 'broken' })
+  assert.equal((await handleRequest(malformed, env)).status, 400)
+})
+
+test('multipart body limit applies to actual bytes even when Content-Length lies', async () => {
+  let cancelled = false
+  const body = new ReadableStream({
+    start(controller) { controller.enqueue(new Uint8Array(1024 * 1024 + 64 * 1024 + 1)) },
+    cancel() { cancelled = true },
+  })
+  const input = new Request('https://fozuai-api.example/v1/uploads/images', { method: 'POST', duplex: 'half', headers: { 'Content-Type': 'multipart/form-data; boundary=test', 'Content-Length': '1' }, body })
+  const response = await handleRequest(input, env, () => assert.fail('must reject before upstream'))
+  assert.equal(response.status, 413)
+  assert.equal(cancelled, true)
+})
+
+test('upload CORS and upstream failures do not expose credentials or accept arbitrary result hosts', async () => {
+  const preflight = new Request('https://fozuai-api.example/v1/uploads/images', { method: 'OPTIONS', headers: { Origin: env.ALLOWED_ORIGIN, 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'content-type' } })
+  assert.equal((await handleRequest(preflight, env)).status, 204)
+  for (const upstream of [jsonResponse({ url: 'https://evil.example/image.png' }), jsonResponse({ url: 'https://upload.apimart.ai/apimart-secret.png' }), new Response(null, { status: 302, headers: { Location: 'https://evil.example' } })]) {
+    const response = await handleRequest(uploadRequest(), env, async () => upstream)
+    assert.equal(response.status, 502)
+    assert.doesNotMatch(await response.text(), /apimart-secret|evil\.example/)
+  }
+})
+
+test('image generation forwards uploaded references and rejects untrusted references', async () => {
+  const image_urls = ['https://upload.apimart.ai/f/reference.png', 'https://getapib.org/f/second.webp']
+  const response = await handleRequest(request('/v1/images/generations', { body: { prompt: '改成水彩风格', image_urls } }), env, async (_url, options) => {
+    assert.deepEqual(JSON.parse(options.body).image_urls, image_urls)
+    return jsonResponse({ data: [{ task_id: 'reference-task' }] })
+  })
+  assert.equal(response.status, 200)
+  for (const refs of ['bad', [123], ['http://upload.apimart.ai/a'], ['https://upload.apimart.ai.evil.example/a'], ['https://user:pass@upload.apimart.ai/a'], ['data:image/png;base64,abcd'], Array(4).fill(image_urls[0])]) {
+    const invalid = await handleRequest(request('/v1/images/generations', { body: { prompt: 'test', image_urls: refs } }), env, () => assert.fail('must reject before upstream'))
+    assert.equal(invalid.status, 400)
+  }
+})

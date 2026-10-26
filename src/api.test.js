@@ -105,3 +105,54 @@ test('aborting an image request cancels the wait before its next poll', async ()
   await assert.rejects(request, { name: 'AbortError' })
   assert.equal(calls, 1)
 })
+
+const referenceDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6ZQAAAABJRU5ErkJggg=='
+
+test('reference generation uploads multipart files in order before submitting URL references', async () => {
+  const calls = []
+  const progress = []
+  const result = await requestImage({ config, prompt: '把图1画成图2的风格', referenceImages: [referenceDataUrl, referenceDataUrl], onProgress: (text) => progress.push(text), pollInterval: 0, fetchImpl: async (url, options) => {
+    calls.push(url)
+    if (url.endsWith('/uploads/images')) {
+      assert.equal(options.headers, undefined)
+      assert.ok(options.body instanceof FormData)
+      assert.equal(options.body.get('file').type, 'image/png')
+      return json({ url: `https://upload.apimart.ai/f/ref-${calls.length}.png` })
+    }
+    if (url.endsWith('/images/generations')) {
+      const payload = JSON.parse(options.body)
+      assert.deepEqual(payload.image_urls, ['https://upload.apimart.ai/f/ref-1.png', 'https://upload.apimart.ai/f/ref-2.png'])
+      assert.equal(payload.prompt, '把图1画成图2的风格')
+      assert.doesNotMatch(options.body, /base64/)
+      return json({ data: [{ task_id: 'reference-task' }] })
+    }
+    return json({ data: { status: 'completed', result: { images: [{ url: 'https://images.example/edited.png' }] } } })
+  } })
+  assert.equal(calls.length, 4)
+  assert.match(progress[0], /1\/2/)
+  assert.match(progress[1], /2\/2/)
+  assert.equal(result.taskId, 'reference-task')
+})
+
+test('failed, cancelled and invalid reference uploads never submit an image generation task', async () => {
+  for (const failure of [json({}, 413), json({ url: 'https://evil.example/reference.png' })]) {
+    let calls = 0
+    await assert.rejects(requestImage({ config, prompt: 'test', referenceImages: [referenceDataUrl], fetchImpl: async (url) => {
+      calls++
+      assert.match(url, /\/uploads\/images$/)
+      return failure
+    } }), /第 1 张参考图上传失败/)
+    assert.equal(calls, 1)
+  }
+  for (const refs of [Array(4).fill(referenceDataUrl), ['data:image/svg+xml;base64,abcd'], ['https://somewhere.example/image.png']]) {
+    await assert.rejects(requestImage({ config, prompt: 'test', referenceImages: refs, fetchImpl: () => assert.fail('invalid references must not upload') }), { code: 'invalid_reference' })
+  }
+  const controller = new AbortController()
+  let calls = 0
+  await assert.rejects(requestImage({ config, prompt: 'test', referenceImages: [referenceDataUrl, referenceDataUrl], signal: controller.signal, fetchImpl: async () => {
+    calls++
+    controller.abort()
+    return json({ url: 'https://upload.apimart.ai/f/reference.png' })
+  } }), { name: 'AbortError' })
+  assert.equal(calls, 1)
+})

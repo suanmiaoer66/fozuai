@@ -1,7 +1,10 @@
+import { MAX_REFERENCE_IMAGES, MAX_REFERENCE_IMAGE_BYTES, REFERENCE_IMAGE_TYPES, isUploadedReferenceUrl } from '../shared/referenceImages.js'
+
 const DEFAULT_ORIGIN = 'https://suanmiaoer66.github.io'
 const MAX_REQUEST_BYTES = 128 * 1024
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024
+const MAX_UPLOAD_REQUEST_BYTES = MAX_REFERENCE_IMAGE_BYTES + 64 * 1024
 const IMAGE_DOWNLOAD_TYPES = new Map([
   ['image/png', 'png'], ['image/jpeg', 'jpg'], ['image/webp', 'webp'],
   ['image/gif', 'gif'], ['image/avif', 'avif'],
@@ -102,6 +105,50 @@ async function requestBody(request) {
   return readJson(request.body, MAX_REQUEST_BYTES)
 }
 
+async function referenceUploadBody(request) {
+  const contentType = request.headers.get('Content-Type') || ''
+  if (!/^multipart\/form-data\s*;/i.test(contentType)) throw new HttpError(415, 'invalid_image_upload', '请重新选择参考图片后上传。')
+  const tooLarge = () => new HttpError(413, 'image_too_large', '参考图片过大，请缩小图片后重试。')
+  const length = request.headers.get('Content-Length')
+  if (length !== null && (!/^\d+$/.test(length) || Number(length) > MAX_UPLOAD_REQUEST_BYTES)) throw tooLarge()
+  if (!request.body) invalid('请选择参考图片。')
+  // Bound the actual stream before invoking the multipart parser, including
+  // requests without Content-Length or with a misleading declared length.
+  const reader = request.body.getReader()
+  const bytes = new Uint8Array(MAX_UPLOAD_REQUEST_BYTES)
+  let size = 0
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (size + value.byteLength > MAX_UPLOAD_REQUEST_BYTES) {
+        await reader.cancel()
+        throw tooLarge()
+      }
+      bytes.set(value, size)
+      size += value.byteLength
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  let form
+  try {
+    form = await new Response(bytes.subarray(0, size), { headers: { 'Content-Type': contentType } }).formData()
+  } catch {
+    invalid('图片上传内容无效，请重新选择图片。')
+  }
+  const entries = [...form.entries()]
+  const file = form.get('file')
+  if (entries.length !== 1 || entries[0][0] !== 'file' || !(file instanceof Blob) || !file.size) invalid('每次上传须包含一张有效参考图片。')
+  if (file.size > MAX_REFERENCE_IMAGE_BYTES) throw tooLarge()
+  if (!REFERENCE_IMAGE_TYPES.includes(file.type)) throw new HttpError(415, 'invalid_image_type', '参考图支持 PNG、JPG 和 WebP 格式。')
+  const prefix = new Uint8Array(await file.slice(0, 32).arrayBuffer())
+  if (!imageSignatureMatches(prefix, file.type)) invalid('图片内容与格式不匹配，请重新选择图片。')
+  const upload = new FormData()
+  upload.append('file', file, `reference.${IMAGE_DOWNLOAD_TYPES.get(file.type)}`)
+  return upload
+}
+
 function resolveChatModel(label, env) {
   if (label === '高级佛祖模型') return { model: env.DEEPSEEK_REASONING_MODEL || env.DEEPSEEK_VISION_MODEL || 'deepseek-flash', advanced: true }
   if (label === '导管佛祖模型') return { model: env.DEEPSEEK_CHAT_MODEL || env.DEEPSEEK_VISION_MODEL || 'deepseek-flash', advanced: false }
@@ -148,7 +195,10 @@ function imagePayload(data, env) {
   const validPixels = pixels && pixels.slice(1).every((value) => Number(value) >= 256 && Number(value) <= 4096)
   if (!IMAGE_SIZES.has(size) && !validPixels) invalid('图片比例或尺寸不受支持。')
   if (!['1k', '2k', '4k'].includes(resolution)) invalid('图片分辨率须为 1k、2k 或 4k。')
-  return { model, prompt: data.prompt.trim(), n: 1, size, resolution }
+  if (data.image_urls !== undefined && (!Array.isArray(data.image_urls) || data.image_urls.length > MAX_REFERENCE_IMAGES || data.image_urls.some((value) => !isUploadedReferenceUrl(value)))) {
+    invalid(`最多使用 ${MAX_REFERENCE_IMAGES} 张已上传的参考图片，请重新选择图片。`)
+  }
+  return { model, prompt: data.prompt.trim(), n: 1, size, resolution, ...(data.image_urls?.length ? { image_urls: data.image_urls } : {}) }
 }
 
 function upstreamRoot(configured, origin) {
@@ -185,8 +235,8 @@ async function upstreamRequest(url, method, payload, key, fetchImpl, timeoutMs) 
   try {
     const response = await fetchImpl(url, {
       method,
-      headers: { Authorization: `Bearer ${key}`, Accept: 'application/json', ...(payload ? { 'Content-Type': 'application/json' } : {}) },
-      ...(payload ? { body: JSON.stringify(payload) } : {}),
+      headers: { Authorization: `Bearer ${key}`, Accept: 'application/json', ...(payload && !(payload instanceof FormData) ? { 'Content-Type': 'application/json' } : {}) },
+      ...(payload ? { body: payload instanceof FormData ? payload : JSON.stringify(payload) } : {}),
       signal: controller.signal,
       // Never forward an API key to a redirect destination.
       redirect: 'manual',
@@ -374,11 +424,12 @@ export async function handleRequest(request, env, fetchImpl = fetch, timeoutMs =
     const url = new URL(request.url)
     const isChat = ['/chat/completions', '/v1/chat/completions'].includes(url.pathname)
     const isImage = url.pathname === '/v1/images/generations'
+    const isUpload = url.pathname === '/v1/uploads/images'
     const taskMatch = /^\/v1\/tasks\/([A-Za-z0-9_-]{1,128})(\/image)?$/.exec(url.pathname)
     const isHealth = url.pathname === '/health'
-    if (!isChat && !isImage && !taskMatch && !isHealth) throw new HttpError(404, 'not_found', '接口不存在。')
+    if (!isChat && !isImage && !isUpload && !taskMatch && !isHealth) throw new HttpError(404, 'not_found', '接口不存在。')
     if (url.search) invalid('请求地址不能包含查询参数。')
-    const method = isChat || isImage ? 'POST' : 'GET'
+    const method = isChat || isImage || isUpload ? 'POST' : 'GET'
     if (request.method === 'OPTIONS') {
       const requestedMethod = request.headers.get('Access-Control-Request-Method')
       const requestedHeaders = (request.headers.get('Access-Control-Request-Headers') || '').split(',').map((value) => value.trim().toLowerCase()).filter(Boolean)
@@ -402,6 +453,12 @@ export async function handleRequest(request, env, fetchImpl = fetch, timeoutMs =
       return json(chatResult(await upstreamRequest(`${root}/chat/completions`, 'POST', payload, env.DEEPSEEK_API_KEY, fetchImpl, timeoutMs), env))
     }
     const root = upstreamRoot(env.APIMART_BASE_URL, 'https://api.apimart.ai')
+    if (isUpload) {
+      const form = await referenceUploadBody(request)
+      const result = await upstreamRequest(`${root}/uploads/images`, 'POST', form, env.APIMART_API_KEY, fetchImpl, timeoutMs)
+      if (!isUploadedReferenceUrl(result.url) || secretValues(env).some((key) => result.url.includes(key))) invalidResponse()
+      return json({ url: result.url })
+    }
     if (isImage) {
       const payload = imagePayload(await requestBody(request), env)
       return json(imageSubmission(await upstreamRequest(`${root}/images/generations`, 'POST', payload, env.APIMART_API_KEY, fetchImpl, timeoutMs), env))

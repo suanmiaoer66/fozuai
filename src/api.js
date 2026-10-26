@@ -1,3 +1,5 @@
+import { MAX_REFERENCE_IMAGES, MAX_REFERENCE_IMAGE_BYTES, isUploadedReferenceUrl } from '../shared/referenceImages.js'
+
 export class ApiError extends Error {
   constructor(message, code = 'request_failed', status) {
     super(message)
@@ -32,6 +34,7 @@ async function requestJson(url, options, fetchImpl) {
     }
     if (response.status === 429) throw new ApiError('请求过于频繁或服务额度不足，请稍后重试。', 'rate_limited', response.status)
     if (response.status === 404) throw new ApiError('服务地址无法使用，请联系网站管理员检查接口配置。', 'not_found', response.status)
+    if (response.status === 413) throw new ApiError('图片或请求内容过大，请缩小图片后重试。', 'payload_too_large', response.status)
     if (response.status >= 500) throw new ApiError('服务暂时不可用，请稍后重试；若持续失败，请联系网站管理员检查服务配置与账户额度。', 'service_error', response.status)
     throw new ApiError(`请求未成功（${response.status}），请检查输入后重试。`, 'request_failed', response.status)
   }
@@ -74,14 +77,48 @@ function delay(ms, signal) {
   })
 }
 
-export async function requestImage({ config, prompt, size = config.imageSize, resolution = config.imageResolution, signal, fetchImpl = fetch, pollInterval = 2500, maxAttempts = 120 }) {
+function referenceFile(dataUrl, index) {
+  if (typeof dataUrl !== 'string' || dataUrl.length > Math.ceil(MAX_REFERENCE_IMAGE_BYTES / 3) * 4 + 64) throw new ApiError('参考图片过大，请重新选择图片。', 'invalid_reference')
+  const match = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]+={0,2})$/.exec(dataUrl)
+  if (!match) throw new ApiError('参考图片格式无效，请重新选择图片。', 'invalid_reference')
+  let bytes
+  try {
+    bytes = Uint8Array.from(atob(match[2]), (char) => char.charCodeAt(0))
+  } catch {
+    throw new ApiError('参考图片内容无效，请重新选择图片。', 'invalid_reference')
+  }
+  if (!bytes.length || bytes.length > MAX_REFERENCE_IMAGE_BYTES) throw new ApiError('参考图片过大，请重新选择图片。', 'invalid_reference')
+  const extension = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' }[match[1]]
+  return { blob: new Blob([bytes], { type: match[1] }), filename: `reference-${index + 1}.${extension}` }
+}
+
+export async function requestImage({ config, prompt, size = config.imageSize, resolution = config.imageResolution, referenceImages = [], onProgress, signal, fetchImpl = fetch, pollInterval = 2500, maxAttempts = 120 }) {
   if (!config.imageProxyUrl) throw new ApiError('图片服务尚未配置，请联系网站管理员连接图片服务。', 'not_configured')
+  if (!Array.isArray(referenceImages) || referenceImages.length > MAX_REFERENCE_IMAGES) throw new ApiError(`最多使用 ${MAX_REFERENCE_IMAGES} 张参考图片。`, 'invalid_reference')
+  const files = referenceImages.map(referenceFile)
   const apiRoot = config.imageProxyUrl.endsWith('/v1') ? config.imageProxyUrl : `${config.imageProxyUrl}/v1`
+  const imageUrls = []
+  for (const [index, { blob, filename }] of files.entries()) {
+    signal?.throwIfAborted()
+    onProgress?.(`正在上传参考图（${index + 1}/${files.length}）…`)
+    const form = new FormData()
+    form.append('file', blob, filename)
+    try {
+      const result = await requestJson(`${apiRoot}/uploads/images`, { method: 'POST', body: form, signal }, fetchImpl)
+      if (!isUploadedReferenceUrl(result.url)) throw new ApiError('图片服务未返回有效参考图地址，请重试。', 'invalid_response')
+      imageUrls.push(result.url)
+    } catch (error) {
+      if (signal?.aborted || error.name === 'AbortError') throw error
+      throw new ApiError(`第 ${index + 1} 张参考图上传失败：${error.message}`, error.code, error.status)
+    }
+  }
+  signal?.throwIfAborted()
+  onProgress?.(files.length ? '参考图已上传，正在生成图片…' : '正在生成图片…')
   const submitData = await requestJson(`${apiRoot}/images/generations`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     signal,
-    body: JSON.stringify({ model: config.imageModel, prompt, n: 1, size, resolution }),
+    body: JSON.stringify({ model: config.imageModel, prompt, n: 1, size, resolution, ...(imageUrls.length ? { image_urls: imageUrls } : {}) }),
   }, fetchImpl)
   const taskId = submitData?.data?.[0]?.task_id
   if (typeof taskId !== 'string' || !taskId) throw new ApiError('图片任务未能创建，请重试或联系网站管理员检查图片服务。', 'invalid_response')
