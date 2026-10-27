@@ -77,6 +77,9 @@ export default function Workspace({ config, model, seed, onSeedConsumed, onCount
   const [exportBusy, setExportBusy] = useState(false)
   const [exportError, setExportError] = useState('')
   const [imageBusy, setImageBusy] = useState(false)
+  const [workspacePrompt, setWorkspacePrompt] = useState('')
+  const [promptBusy, setPromptBusy] = useState(false)
+  const [promptError, setPromptError] = useState('')
   const editorRef = useRef(null)
   const fileRef = useRef(null)
   const requestRef = useRef(null)
@@ -105,6 +108,8 @@ export default function Workspace({ config, model, seed, onSeedConsumed, onCount
     setDeleteId(null)
     setExportOpen(false)
     setLibraryOpen(false)
+    setWorkspacePrompt('')
+    setPromptBusy(false)
   }, [active])
   useEffect(() => {
     if (loading || !seed || consumedSeeds.current.has(seed.id)) return
@@ -146,6 +151,61 @@ export default function Workspace({ config, model, seed, onSeedConsumed, onCount
     setActiveId(id)
     activeIdRef.current = id
     setLibraryOpen(false)
+  }
+
+  function titleFromGeneratedContent(content, fallback = '新文档') {
+    const heading = String(content || '').split(/\r?\n/).find((line) => /^#\s+/.test(line.trim()))
+    const title = heading ? heading.replace(/^#+\s*/, '').replace(/[*_`]/g, '').trim() : ''
+    return (title || fallback).slice(0, 120)
+  }
+
+  async function createFromPrompt(event) {
+    event.preventDefault()
+    const instruction = workspacePrompt.trim()
+    if (!instruction || promptBusy || loading) return
+    // A new document request starts a clean interaction; cancel any in-flight
+    // edit and clear selection/proposal state from the previously opened draft.
+    resetDocumentTools()
+    setPromptBusy(true)
+    setPromptError('')
+    const created = createDocument({ title: '正在生成文档', content: '' })
+    if (!created) {
+      setPromptBusy(false)
+      setPromptError('暂时无法创建文档，请稍后重试。')
+      return
+    }
+    setActiveId(created.id)
+    activeIdRef.current = created.id
+    setLibraryOpen(false)
+    setWorkspacePrompt('')
+    setNotice('正在整理内容…')
+    const controller = new AbortController()
+    requestRef.current = controller
+    const discardCreated = () => {
+      removeDocument(created.id)
+      if (activeIdRef.current === created.id) {
+        setActiveId(null)
+        activeIdRef.current = null
+      }
+    }
+    try {
+      const result = await requestDocument({ config, model, instruction, document: created, signal: controller.signal })
+      if (controller.signal.aborted || requestRef.current !== controller) {
+        discardCreated()
+        return
+      }
+      const title = titleFromGeneratedContent(result, instruction.slice(0, 24))
+      updateDocument(created.id, { title, content: result })
+      setNotice('文档已生成，可以直接修改或导出。')
+    } catch (error) {
+      // Never leave an empty "正在生成文档" draft behind after cancellation
+      // or an upstream failure. The user can submit the prompt again safely.
+      discardCreated()
+      if (!controller.signal.aborted) setPromptError(error.message || '文档生成失败，请重试。')
+    } finally {
+      if (requestRef.current === controller) requestRef.current = null
+      setPromptBusy(false)
+    }
   }
 
   function newDocument(fields = {}) {
@@ -312,6 +372,29 @@ export default function Workspace({ config, model, seed, onSeedConsumed, onCount
     finally { setExportBusy(false) }
   }
 
+  async function downloadFormat(format) {
+    if (!activeDocument || exportBusy) return
+    setExportFormat(format)
+    setExportBusy(true)
+    setExportError('')
+    try {
+      const { blob } = await createDocumentExport({ ...activeDocument }, format)
+      const url = URL.createObjectURL(blob)
+      const link = window.document.createElement('a')
+      link.href = url
+      link.download = `${fileStem(activeDocument.title)}.${formats.find((item) => item.value === format).extension}`
+      window.document.body.appendChild(link)
+      link.click()
+      link.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 60000)
+      setNotice(`${formats.find((item) => item.value === format).label} 文件已生成。`)
+    } catch (error) {
+      setExportError(error.message || '文件生成失败，请重试。')
+    } finally {
+      setExportBusy(false)
+    }
+  }
+
   function confirmDelete() {
     const removed = removeDocument(deleteId)
     if (removed && activeId === deleteId) { resetDocumentTools(); setActiveId(null) }
@@ -321,52 +404,37 @@ export default function Workspace({ config, model, seed, onSeedConsumed, onCount
   const saveLabel = loading ? '正在读取草稿…' : saveStatus === 'saving' ? '正在保存…' : saveStatus === 'error' ? '保存失败' : '已保存到本机'
   const deleteDocument = documents.find((doc) => doc.id === deleteId)
 
-  return <section className="document-workspace" aria-label="文档工作区">
+  return <section className="document-workspace workspace-qa" aria-label="文档工作区">
     <header className="workspace-header">
-      <div className="workspace-header-title"><div className="ws-heading-icon"><Document size={21} weight="Outline" /></div><div><h1>文档工作区</h1><p>把想法写下来，把成果带走。</p></div></div>
-      <div className="workspace-header-actions"><button type="button" className="ws-button ws-back" aria-label="返回对话" onClick={onBackToChat}><ArrowLeft {...icon} /><span>返回对话</span></button><button type="button" className="ws-button ws-primary" onClick={() => newDocument()} disabled={loading}><Plus {...icon} /><span>新建文档</span></button></div>
+      <div className="workspace-header-title"><div className="ws-heading-icon"><Document size={21} weight="Outline" /></div><div><h1>文档工作台</h1><p>像聊天一样说出需求，直接得到一份可编辑的文档。</p></div></div>
+      <div className="workspace-header-actions"><button type="button" className="ws-button ws-back" aria-label="返回对话" onClick={onBackToChat}><ArrowLeft {...icon} /><span>返回对话</span></button><button type="button" className="ws-button" onClick={() => newDocument()} disabled={loading}><Plus {...icon} /><span>空白文档</span></button></div>
     </header>
-    <div className="workspace-body">
-      <aside className={`workspace-library ${libraryOpen ? 'library-open' : ''}`} aria-label="本机文档">
-        <div className="ws-library-heading"><span>我的文档 <small>{documents.length}</small></span><button type="button" className="ws-icon-button ws-library-close" aria-label="关闭文档列表" onClick={() => setLibraryOpen(false)}><CloseCircle {...icon} /></button></div>
-        <label className="ws-search"><Search3 size={15} weight="Outline" /><input aria-label="搜索文档" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文档" /></label>
-        <div className="ws-document-list">{loading ? <p className="ws-library-empty">正在读取本机文档…</p> : filteredDocuments.length ? filteredDocuments.map((doc) => <div className={`ws-document-row ${activeId === doc.id ? 'selected' : ''}`} key={doc.id}><button className="ws-document-select" type="button" onClick={() => selectDocument(doc.id)} aria-current={activeId === doc.id ? 'page' : undefined}><Document {...icon} /><span><b>{doc.title}</b><small>{displayDate(doc.updatedAt)} · {doc.content.length.toLocaleString()} 字</small></span></button><button className="ws-document-delete ws-icon-button" type="button" aria-label={`删除文档 ${doc.title}`} onClick={() => setDeleteId(doc.id)}><Trash size={14} weight="Outline" /></button></div>) : <p className="ws-library-empty">{query ? '没有找到这份文档。' : '还没有文档，\n从空白页或模板开始。'}</p>}</div>
-        <div className="ws-local-note"><span className="ws-local-dot" /><p>仅保存在此浏览器<br /><small>重要文档请及时下载备份</small></p></div>
-      </aside>
-      {libraryOpen && <button className="ws-library-shade" aria-label="关闭文档列表" type="button" onClick={() => setLibraryOpen(false)} />}
-      <div className="workspace-desk">
-        {(saveError || actionError) && <div className="ws-alert" role="alert"><span>{saveError || actionError}</span>{saveError ? <><button type="button" onClick={() => retrySave?.()}>重新保存</button><button type="button" onClick={clearError}>关闭</button></> : <button type="button" onClick={() => setActionError('')}>关闭</button>}</div>}
-        {!activeDocument ? <div className="workspace-empty">
-          <button type="button" className="ws-button ws-mobile-library" onClick={() => setLibraryOpen(true)}><List {...icon} />我的文档{documents.length ? ` (${documents.length})` : ''}</button>
-          <div className="ws-empty-art" aria-hidden="true"><Document size={42} weight="Outline" /><span><Magicpen size={19} weight="Outline" /></span></div>
-          <p className="ws-overline">从对话，到一份好文档</p><h2>留住想法，完成作品</h2><p className="ws-empty-copy">写报告、整理方案、记录会议。<br />直接编辑或让 AI 帮你起草，预览后下载。</p>
-          <button className="ws-button ws-primary ws-start-button" type="button" onClick={() => newDocument()} disabled={loading}><Plus {...icon} />创建空白文档</button>
-          <div className="ws-template-label">也可以从一个结构开始</div><div className="ws-templates">{templates.map((template) => <button type="button" key={template.title} disabled={loading} onClick={() => newDocument(template)}><Document size={20} weight="Outline" /><b>{template.title}</b><span>{template.label}</span></button>)}</div>
-          <p className="ws-empty-note">对话回答下方的「转为文档」，也能将内容带到这里。</p>
-        </div> : <>
-          <div className="ws-document-heading"><button type="button" className="ws-icon-button ws-mobile-library" aria-label="打开文档列表" onClick={() => setLibraryOpen(true)}><List {...icon} /></button><div className="ws-title-field"><input aria-label="文档标题" value={activeDocument.title} maxLength={120} onChange={(event) => patchActive({ title: event.target.value })} onBlur={() => { if (!activeDocument.title.trim()) patchActive({ title: '未命名文档' }) }} placeholder="未命名文档" /><div className={`ws-save-state ${saveStatus === 'error' ? 'is-error' : ''}`} role="status">{saveStatus === 'saved' && <Check size={12} weight="Outline" />}{saveLabel}</div></div><button type="button" className="ws-button ws-export-top" onClick={openExport}><Download {...icon} />导出文件</button></div>
-          <div className="ws-view-tabs" role="tablist" aria-label="工作区视图"><button type="button" role="tab" aria-selected={mobileView === 'edit'} onClick={() => setMobileView('edit')}>编辑</button><button type="button" role="tab" aria-selected={mobileView === 'preview'} onClick={() => setMobileView('preview')}>预览</button></div>
-          <div className={`ws-editor-layout view-${mobileView}`}>
-            <section className="ws-edit-pane" aria-label="文档编辑">
-              <div className="ws-editor-toolbar" role="toolbar" aria-label="文档格式"><span className="ws-pane-label">编辑</span><div className="ws-format-tools"><button type="button" title="插入标题" aria-label="插入标题" onClick={() => insertText('\n## ', '小节标题', '\n')}><b>H</b></button><button type="button" title="加粗" aria-label="加粗选中文字" onClick={() => insertText('**', '加粗文字', '**')}><TextBold {...icon} /></button><button type="button" title="插入列表" aria-label="插入列表" onClick={() => insertText('\n- ', '列表内容', '\n')}><List {...icon} /></button><button type="button" title="插入表格" aria-label="插入表格" onClick={() => insertText('\n\n', '| 标题 | 内容 |\n| --- | --- |\n| 项目 | 说明 |', '\n\n')}><Grid {...icon} /></button><button type="button" title="插入图片" aria-label="插入文档图片" onClick={() => fileRef.current?.click()} disabled={imageBusy || activeDocument.assets.length >= MAX_ASSETS}><Image {...icon} /></button><button type="button" title="撤销 AI 修改" aria-label="撤销 AI 修改" onClick={undoAI} disabled={!undo || undo.documentId !== activeDocument.id || undo.after !== activeDocument.content}><Undo {...icon} /></button></div></div>
-              <input className="ws-file-input" type="file" ref={fileRef} accept="image/png,image/jpeg,image/webp" multiple onChange={(event) => addImages(event.target.files)} aria-label="选择文档图片" />
-              <textarea ref={editorRef} className="ws-editor" aria-label="文档正文" placeholder={'在这里写下你的内容…\n\n支持标题、加粗、列表和表格。也可以在下方告诉 AI 你想写什么。'} value={activeDocument.content} maxLength={MAX_CONTENT} onChange={(event) => changeContent(event.target.value)} onSelect={rememberSelection} spellCheck="false" />
-              {activeDocument.assets.length > 0 && <div className="ws-assets" aria-label="文档图片">{activeDocument.assets.map((asset) => <div className="ws-asset" key={asset.id}><img src={asset.dataUrl} alt="" /><span title={asset.name}>{asset.name}</span><button type="button" aria-label={`移除图片 ${asset.name}`} onClick={() => removeImage(asset)}><CloseCircle size={14} weight="Outline" /></button></div>)}</div>}
-              <div className="ws-editor-foot"><span>{imageBusy ? '正在处理图片…' : 'Markdown 编辑 · 支持图文和表格'}</span><span>{activeDocument.content.length.toLocaleString()} / 48,000</span></div>
-              <form className="ws-ai-composer" onSubmit={generateDocument}>
-                <div className="ws-ai-label"><span><Magicpen size={16} weight="Outline" />让 AI 帮你写</span><small>{selection ? `已选中 ${selection.text.length} 字` : activeDocument.content.trim() ? '修改整篇文档' : '起草新内容'}</small>{selection && <button className="ws-text-button" type="button" onClick={() => setSelection(null)} disabled={aiBusy}>取消选中</button>}</div>
-                <textarea aria-label="给 AI 的文档指令" placeholder={selection ? '例如：精简选中内容，保留关键信息' : '例如：写一份咖啡店开业方案，包含预算和时间计划'} value={instruction} maxLength={4000} onChange={(event) => setInstruction(event.target.value)} disabled={aiBusy} rows={2} />
-                <div className="ws-ai-actions"><span>{aiBusy ? '正在撰写，你可以随时停止' : 'AI 结果确认后才会应用'}</span>{aiBusy ? <button className="ws-button ws-ai-stop" type="button" onClick={cancelGeneration}>停止生成</button> : <button type="submit" className="ws-button ws-primary" disabled={!instruction.trim() || imageBusy}><Magicpen size={15} weight="Outline" />{selection ? '修改选中内容' : activeDocument.content.trim() ? '生成修改建议' : '开始起草'}</button>}</div>
-              </form>
-            </section>
-            <section className="ws-preview-pane" aria-label="实时预览"><div className="ws-preview-heading"><span className="ws-pane-label">实时预览</span><span>{activeDocument.pageSize === 'LETTER' ? 'Letter' : 'A4'} · 导出时自动分页</span></div><div className="ws-paper-scroll"><DocumentPreview document={activeDocument} /></div></section>
-          </div>
-          <footer className="ws-document-footer"><p role="status">{notice || '草稿仅保存在此浏览器，手机与电脑之间暂不同步。'}</p><button type="button" className="ws-button ws-primary ws-export-bottom" onClick={openExport}><Download {...icon} />导出文件</button></footer>
-        </>}
-      </div>
+    <div className="workspace-qa-body">
+      <main className="workspace-qa-main">
+        {(saveError || actionError || promptError || exportError) && <div className="ws-alert" role="alert"><span>{saveError || actionError || promptError || exportError}</span>{saveError ? <><button type="button" onClick={() => retrySave?.()}>重新保存</button><button type="button" onClick={clearError}>关闭</button></> : <button type="button" onClick={() => { setActionError(''); setPromptError(''); setExportError('') }}>关闭</button>}</div>}
+        <div className="ws-qa-intro">
+          <p className="ws-overline">佛祖 AI · 文档助手</p>
+          <h2>你想做一份什么文档？</h2>
+          <p>告诉我主题、用途和希望包含的内容，我会先生成一份草稿，你可以继续追问、编辑和下载。</p>
+          <form className="ws-qa-composer" onSubmit={createFromPrompt}>
+            <textarea aria-label="描述你想生成的文档" value={workspacePrompt} onChange={(event) => setWorkspacePrompt(event.target.value)} disabled={promptBusy || loading} placeholder="例如：写一份咖啡店开业方案，包含预算、时间计划和检查清单" rows={3} />
+            <div className="ws-qa-composer-foot"><span>{promptBusy ? '正在生成文档…' : '支持报告、方案、纪要、清单等格式'}</span><button type="submit" className="ws-button ws-primary" disabled={!workspacePrompt.trim() || promptBusy || loading}><Magicpen size={16} weight="Outline" />{promptBusy ? '生成中…' : '生成文档'}</button></div>
+          </form>
+          <div className="ws-qa-suggestions" aria-label="快速开始">{['写一份工作周报', '整理会议纪要', '制定项目执行方案'].map((item) => <button key={item} type="button" onClick={() => setWorkspacePrompt(item)} disabled={promptBusy}>{item}</button>)}</div>
+        </div>
+        <div className="ws-doc-feed-heading"><div><h3>我的文档</h3><span>{documents.length ? `${documents.length} 份草稿，点击即可展开详情` : '生成的内容会保存在这里'}</span></div><label className="ws-search"><Search3 size={15} weight="Outline" /><input aria-label="搜索文档" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文档" /></label></div>
+        {loading ? <div className="ws-doc-loading"><span /><span /><span /></div> : filteredDocuments.length ? <div className="ws-doc-grid">{filteredDocuments.map((doc) => <article className={`ws-doc-card ${activeId === doc.id ? 'selected' : ''}`} key={doc.id}><button type="button" className="ws-doc-card-main" onClick={() => selectDocument(doc.id)} aria-label={`查看文档 ${doc.title}`}><div className="ws-doc-card-icon"><Document {...icon} /></div><div className="ws-doc-card-copy"><h4>{doc.title}</h4><p>{doc.content.replace(/[#*`|>\[\]]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 92) || '空白文档，点击后开始编辑。'}</p><small>{displayDate(doc.updatedAt)} · {doc.content.length.toLocaleString()} 字</small></div><span className="ws-doc-card-arrow">查看详情</span></button><button type="button" className="ws-doc-delete" aria-label={`删除文档 ${doc.title}`} onClick={() => setDeleteId(doc.id)}><Trash size={14} weight="Outline" /></button></article>)}</div> : <div className="ws-doc-empty"><Document size={30} weight="Outline" /><p>{query ? '没有找到匹配的文档。' : '还没有文档，先在上方描述你的需求吧。'}</p>{!query && <button type="button" className="ws-button" onClick={() => newDocument()}>创建空白文档</button>}</div>}
+        {!documents.length && <div className="ws-quick-templates"><span>也可以从模板开始</span><div>{templates.map((template) => <button type="button" key={template.title} onClick={() => newDocument(template)} disabled={loading}><Document size={16} weight="Outline" /><b>{template.title}</b><small>{template.label}</small></button>)}</div></div>}
+        <p className="ws-local-note-inline"><span className="ws-local-dot" />草稿仅保存在此浏览器，重要文档请及时导出备份。</p>
+      </main>
+      {activeDocument && <aside className="ws-detail-panel" aria-label="文档详情">
+        <div className="ws-detail-head"><div><span>文档详情</span><small>{saveLabel}</small></div><div className="ws-detail-actions"><div className="ws-export-wrap"><button type="button" className="ws-button ws-primary ws-export-trigger" disabled={exportBusy} aria-label="导出文档"><Download size={15} weight="Outline" />{exportBusy ? '生成中…' : '导出'}<span className="ws-export-caret">⌄</span></button><div className="ws-export-popover" role="menu" aria-label="选择导出格式">{formats.map((format) => <button type="button" role="menuitem" key={format.value} onClick={() => downloadFormat(format.value)} disabled={exportBusy}><span><b>{format.label}</b><small>{format.description}</small></span><Download size={14} weight="Outline" /></button>)}</div></div><button type="button" className="ws-icon-button" aria-label="关闭文档详情" onClick={() => { resetDocumentTools(); setActiveId(null) }}><CloseCircle {...icon} /></button></div></div>
+        <div className="ws-detail-title"><input aria-label="文档标题" value={activeDocument.title} maxLength={120} onChange={(event) => patchActive({ title: event.target.value })} onBlur={() => { if (!activeDocument.title.trim()) patchActive({ title: '未命名文档' }) }} /><span>{displayDate(activeDocument.updatedAt)}</span></div>
+        <div className="ws-detail-scroll"><div className="ws-detail-editor"><div className="ws-detail-toolbar" role="toolbar" aria-label="文档格式"><span>直接编辑</span><div><button type="button" title="插入标题" aria-label="插入标题" onClick={() => insertText('\n## ', '小节标题', '\n')}><b>H</b></button><button type="button" title="加粗" aria-label="加粗选中文字" onClick={() => insertText('**', '加粗文字', '**')}><TextBold {...icon} /></button><button type="button" title="插入列表" aria-label="插入列表" onClick={() => insertText('\n- ', '列表内容', '\n')}><List {...icon} /></button><button type="button" title="插入图片" aria-label="插入文档图片" onClick={() => fileRef.current?.click()} disabled={imageBusy || activeDocument.assets.length >= MAX_ASSETS}><Image {...icon} /></button><button type="button" title="撤销 AI 修改" aria-label="撤销 AI 修改" onClick={undoAI} disabled={!undo || undo.documentId !== activeDocument.id || undo.after !== activeDocument.content}><Undo {...icon} /></button></div></div><input className="ws-file-input" type="file" ref={fileRef} accept="image/png,image/jpeg,image/webp" multiple onChange={(event) => addImages(event.target.files)} aria-label="选择文档图片" /><textarea ref={editorRef} className="ws-editor" aria-label="文档正文" placeholder="在这里修改文档内容…" value={activeDocument.content} maxLength={MAX_CONTENT} onChange={(event) => changeContent(event.target.value)} onSelect={rememberSelection} spellCheck="false" />{activeDocument.assets.length > 0 && <div className="ws-assets" aria-label="文档图片">{activeDocument.assets.map((asset) => <div className="ws-asset" key={asset.id}><img src={asset.dataUrl} alt="" /><span title={asset.name}>{asset.name}</span><button type="button" aria-label={`移除图片 ${asset.name}`} onClick={() => removeImage(asset)}><CloseCircle size={14} weight="Outline" /></button></div>)}</div>}<div className="ws-editor-foot"><span>{imageBusy ? '正在处理图片…' : 'Markdown · 支持图文和表格'}</span><span>{activeDocument.content.length.toLocaleString()} / 48,000</span></div></div><div className="ws-detail-preview"><div className="ws-detail-preview-head"><span>实时预览</span><small>{activeDocument.pageSize === 'LETTER' ? 'Letter' : 'A4'}</small></div><div className="ws-paper-scroll"><DocumentPreview document={activeDocument} /></div></div></div>
+        <form className="ws-detail-ai" onSubmit={generateDocument}><div><Magicpen size={15} weight="Outline" /><span>{selection ? '修改选中内容' : '继续让 AI 修改'}</span></div><textarea aria-label="给 AI 的文档指令" placeholder={selection ? '例如：把选中内容改得更简洁' : '例如：补充风险与时间安排'} value={instruction} maxLength={4000} onChange={(event) => setInstruction(event.target.value)} disabled={aiBusy} rows={2} /><div><small>{aiBusy ? '正在生成，原文不会被覆盖' : '生成后会先预览，确认后再应用'}</small>{aiBusy ? <button type="button" className="ws-button" onClick={cancelGeneration}>停止</button> : <button type="submit" className="ws-button ws-primary" disabled={!instruction.trim() || imageBusy}><Magicpen size={14} weight="Outline" />生成建议</button>}</div></form>
+      </aside>}
     </div>
     {active && deleteDocument && <Modal title="删除这份文档？" onClose={() => setDeleteId(null)}><p className="ws-modal-copy">「{deleteDocument.title}」将从本机草稿中删除。需要保留的内容，请先下载备份。</p><div className="ws-modal-actions"><button type="button" className="ws-button" onClick={() => setDeleteId(null)}>保留文档</button><button type="button" className="ws-button ws-danger" onClick={confirmDelete}>确认删除</button></div></Modal>}
     {active && proposal && <Modal title={proposal.selection ? '查看选中内容的修改建议' : '查看 AI 文档建议'} onClose={() => setProposal(null)} className="ws-proposal-modal"><p className="ws-modal-copy">{proposalChanged ? '生成期间原文已发生变化，为保护你的编辑，本次建议不能直接应用。你可以选中文字复制，或关闭后重新生成。' : proposal.selection ? '下方为选中内容的新版本，应用后仅替换原选区。' : '下方为新版本，确认后替换正文。应用后可以撤销一次。'}</p><div className="ws-proposal-preview"><DocumentPreview document={activeDocument || { title: '文档建议', assets: proposal.assets }} content={proposal.selection ? proposal.result : proposal.content} showTitle={!proposal.selection} /></div><div className="ws-modal-actions"><button type="button" className="ws-button" onClick={() => setProposal(null)}>保留原文</button><button type="button" className="ws-button ws-primary" onClick={applyProposal} disabled={proposalChanged}><Check {...icon} />应用修改</button></div></Modal>}
-    {active && exportOpen && activeDocument && <Modal title="导出文档" onClose={() => { if (!exportBusy) setExportOpen(false) }} className="ws-export-modal"><form onSubmit={downloadDocument}><p className="ws-modal-copy">选择适合的格式，把这份文档带走。</p><label className="ws-export-field">文件名<input value={exportName} maxLength={120} onChange={(event) => setExportName(event.target.value)} disabled={exportBusy} autoFocus /></label><fieldset className="ws-export-formats"><legend>文件格式</legend>{formats.map((format) => <label key={format.value} className={exportFormat === format.value ? 'selected' : ''}><input type="radio" name="document-format" value={format.value} checked={exportFormat === format.value} onChange={() => { setExportFormat(format.value); setExportError('') }} disabled={exportBusy} /><span><b>{format.label}</b><small>{format.description}</small></span>{exportFormat === format.value && <Check size={16} weight="Outline" />}</label>)}</fieldset><label className="ws-export-page">纸张大小<select value={activeDocument.pageSize} onChange={(event) => patchActive({ pageSize: event.target.value })} disabled={exportBusy || ['md', 'txt'].includes(exportFormat)}><option value="A4">A4 · 210 × 297 mm</option><option value="LETTER">Letter · 216 × 279 mm</option></select></label>{exportFormat === 'txt' && activeDocument.assets.length > 0 && <p className="ws-export-hint">纯文本仅保留文字和图片说明，不包含图片。</p>}{exportFormat === 'pdf' && <p className="ws-export-hint">PDF 中的文字可选中、复制。首次导出需要加载中文字体，网络较慢时请稍等；后续导出会复用已加载的字体。</p>}{exportError && <p role="alert" className="ws-export-error">{exportError}</p>}<div className="ws-modal-actions"><button type="button" className="ws-button" onClick={() => setExportOpen(false)} disabled={exportBusy}>取消</button><button type="submit" className="ws-button ws-primary" disabled={exportBusy || !exportName.trim()}><Download {...icon} />{exportBusy ? '正在生成文件…' : exportError ? '重试下载' : '下载文件'}</button></div></form></Modal>}
   </section>
 }
